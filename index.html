@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compras — Giuliani S.A.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --amarillo: #FFCC03;
+    --gris-claro: #79786D;
+    --gris-oscuro: #504639;
+    --fondo: #F5F4F2;
+    --blanco: #FFFFFF;
+    --rojo: #C0392B;
+    --verde: #2E7D32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Ubuntu', sans-serif;
+    background: var(--fondo);
+    color: var(--gris-oscuro);
+  }
+  header {
+    background: var(--blanco);
+    border-bottom: 3px solid var(--amarillo);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+  header .usuario {
+    font-size: 13px;
+    color: var(--gris-claro);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header button.salir {
+    background: none;
+    border: 1px solid var(--gris-claro);
+    color: var(--gris-oscuro);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  nav.tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--blanco);
+    padding: 0 24px;
+    border-bottom: 1px solid #e5e3dd;
+  }
+  nav.tabs button {
+    background: none;
+    border: none;
+    padding: 12px 18px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--gris-claro);
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+  }
+  nav.tabs button.activa {
+    color: var(--gris-oscuro);
+    border-bottom-color: var(--amarillo);
+  }
+  main { padding: 20px 24px 60px; max-width: 1100px; margin: 0 auto; }
+  .seccion { display: none; }
+  .seccion.activa { display: block; }
+
+  .barra-filtros {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .barra-filtros input, .barra-filtros select {
+    font-family: inherit;
+    padding: 7px 10px;
+    border: 1px solid #d8d5cc;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .chip {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+  .chip.entregado { background: #e3f2e3; color: var(--verde); }
+  .chip.produccion { background: #fdf1d3; color: #8a6d00; }
+
+  table.pedidos { width: 100%; border-collapse: collapse; background: var(--blanco); }
+  table.pedidos th {
+    text-align: left;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--gris-claro);
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--gris-oscuro);
+  }
+  table.pedidos td {
+    padding: 10px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid #ececea;
+    vertical-align: top;
+  }
+  tr.fila-pedido { cursor: pointer; }
+  tr.fila-pedido:hover { background: #fafaf8; }
+  tr.detalle td { background: #fbfaf7; padding: 0; }
+  .detalle-materiales { padding: 4px 12px 14px 32px; }
+  .detalle-materiales table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .detalle-materiales th { text-align: left; color: var(--gris-claro); padding: 4px 8px; }
+  .detalle-materiales td { padding: 4px 8px; border-bottom: 1px dashed #e5e3dd; }
+  .pend-num { font-weight: 700; }
+  .pend-cero { color: var(--verde); }
+  .pend-pos { color: var(--rojo); }
+
+  .panel {
+    background: var(--blanco);
+    border-radius: 6px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    border: 1px solid #e5e3dd;
+  }
+  .panel h2 { font-size: 15px; margin: 0 0 12px; }
+  .fila-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+  .fila-form label { display: flex; flex-direction: column; font-size: 12px; color: var(--gris-claro); gap: 4px; }
+  .fila-form input, .fila-form select {
+    font-family: inherit;
+    padding: 7px 10px;
+    border: 1px solid #d8d5cc;
+    border-radius: 4px;
+    font-size: 13px;
+    min-width: 180px;
+  }
+  button.primario {
+    background: var(--gris-oscuro);
+    color: var(--blanco);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.primario:hover { opacity: 0.9; }
+  button.primario:disabled { opacity: 0.5; cursor: not-allowed; }
+  .aviso { font-size: 13px; padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
+  .aviso.ok { background: #e3f2e3; color: var(--verde); }
+  .aviso.error { background: #fbe4e1; color: var(--rojo); }
+  .aviso.info { background: #eef1f5; color: #34495e; }
+
+  #pantalla-login {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+  }
+  .caja-login {
+    background: var(--blanco);
+    border-top: 4px solid var(--amarillo);
+    border-radius: 6px;
+    padding: 32px 36px;
+    width: 320px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+  }
+  .caja-login h1 { font-size: 17px; margin: 0 0 20px; }
+  .caja-login label { display: block; font-size: 12px; color: var(--gris-claro); margin-bottom: 4px; margin-top: 12px; }
+  .caja-login input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d8d5cc;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .caja-login button { width: 100%; margin-top: 18px; }
+  #app { display: none; }
+  .solo-comprador { display: none; }
+</style>
+</head>
+<body>
+
+<div id="pantalla-login">
+  <div class="caja-login">
+    <h1>Sistema de Compras — Giuliani</h1>
+    <label for="login-email">Usuario</label>
+    <input id="login-email" type="email" placeholder="nombre@giuliani.local" autocomplete="username">
+    <label for="login-pass">Contraseña</label>
+    <input id="login-pass" type="password" autocomplete="current-password">
+    <button class="primario" onclick="iniciarSesion()">Ingresar</button>
+    <div id="login-error" class="aviso error" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="app">
+  <header>
+    <h1>Sistema de Compras — Giuliani S.A.</h1>
+    <div class="usuario">
+      <span id="nombre-usuario"></span>
+      <button class="salir" onclick="cerrarSesion()">Salir</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="herraje" class="tab-btn activa" onclick="cambiarTab('herraje')">Herrajes</button>
+    <button data-tab="insumo" class="tab-btn" onclick="cambiarTab('insumo')">Insumos</button>
+    <button data-tab="recepcion" class="tab-btn" onclick="cambiarTab('recepcion')">Cargar recepción</button>
+    <button data-tab="importar" class="tab-btn solo-comprador" onclick="cambiarTab('importar')">Importar del sistema</button>
+    <button data-tab="stock" class="tab-btn solo-comprador" onclick="cambiarTab('stock')">Actualizar stock físico</button>
+  </nav>
+
+  <main>
+    <!-- HERRAJES / INSUMOS -->
+    <section id="sec-herraje" class="seccion activa">
+      <div class="barra-filtros">
+        <input type="text" id="filtro-herraje" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('herraje')">
+        <select id="estado-herraje" onchange="renderizarPedidos('herraje')">
+          <option value="todos">Todos los estados</option>
+          <option value="en_produccion">En producción</option>
+          <option value="entregado">Entregados</option>
+          <option value="cerrado_manual">Cerrados manualmente</option>
+        </select>
+        <select id="vista-herraje" onchange="renderizarPedidos('herraje')">
+          <option value="pedido">Ver por pedido</option>
+          <option value="material">Ver por material</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
+          <input type="checkbox" id="ocultar-cubierto-herraje" onchange="renderizarPedidos('herraje')">
+          Ocultar lo ya cubierto
+        </label>
+      </div>
+      <table class="pedidos"><thead id="thead-herraje">
+        <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
+      </thead><tbody id="tbody-herraje"></tbody></table>
+    </section>
+
+    <section id="sec-insumo" class="seccion">
+      <div class="barra-filtros">
+        <input type="text" id="filtro-insumo" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('insumo')">
+        <select id="estado-insumo" onchange="renderizarPedidos('insumo')">
+          <option value="todos">Todos los estados</option>
+          <option value="en_produccion">En producción</option>
+          <option value="entregado">Entregados</option>
+          <option value="cerrado_manual">Cerrados manualmente</option>
+        </select>
+        <select id="vista-insumo" onchange="renderizarPedidos('insumo')">
+          <option value="pedido">Ver por pedido</option>
+          <option value="material">Ver por material</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
+          <input type="checkbox" id="ocultar-cubierto-insumo" onchange="renderizarPedidos('insumo')">
+          Ocultar lo ya cubierto
+        </label>
+      </div>
+      <table class="pedidos"><thead id="thead-insumo">
+        <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
+      </thead><tbody id="tbody-insumo"></tbody></table>
+    </section>
+
+    <!-- RECEPCION -->
+    <section id="sec-recepcion" class="seccion">
+      <div class="panel">
+        <h2>Cargar recepción de material</h2>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="rec-rubro">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Material
+            <input type="text" id="rec-material-busqueda" placeholder="Código o nombre..." oninput="buscarMateriales()">
+          </label>
+          <label>Cantidad
+            <input type="number" id="rec-cantidad" min="0" step="0.01">
+          </label>
+          <label>Pedido puntual (opcional)
+            <input type="number" id="rec-pedido" placeholder="Dejar vacío = stock general">
+          </label>
+          <button class="primario" onclick="cargarRecepcion()">Registrar recepción</button>
+        </div>
+        <div id="rec-sugerencias" style="font-size:12px; color:var(--gris-claro); max-height:120px; overflow:auto;"></div>
+        <div id="rec-aviso"></div>
+      </div>
+    </section>
+
+    <!-- IMPORTAR -->
+    <section id="sec-importar" class="seccion">
+      <div class="panel">
+        <h2>Importar export del sistema</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí el archivo tal cual lo exporta el sistema (dg_materiales_herrajes / dg_materiales_insumos).
+          El import es aditivo: nunca pisa pedidos ni requerimientos que ya existen en la base.
+        </p>
+        <div class="fila-form">
+          <label>Rubro del archivo
+            <select id="imp-rubro">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Archivo
+            <input type="file" id="imp-archivo" accept=".xls,.html,.htm">
+          </label>
+          <button class="primario" onclick="importarArchivo()">Importar</button>
+        </div>
+        <div id="imp-aviso"></div>
+      </div>
+    </section>
+
+    <!-- STOCK FISICO -->
+    <section id="sec-stock" class="seccion">
+      <div class="panel">
+        <h2>Actualizar stock físico</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí una planilla con el stock real contado en fábrica. Columnas esperadas: <strong>codigo</strong> y <strong>cantidad</strong>
+          (los nombres de columna no distinguen mayúsculas). Cada carga reemplaza, para adelante, el cálculo de disponible de esos
+          materiales — no se suma a conteos anteriores. Podés subirla tantas veces como hagas el conteo físico (semanal, mensual, etc).
+        </p>
+        <div class="fila-form">
+          <label>Rubro de la planilla
+            <select id="stock-rubro">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Archivo (.xlsx, .xls o .csv)
+            <input type="file" id="stock-archivo" accept=".xlsx,.xls,.csv">
+          </label>
+          <button class="primario" onclick="importarStockFisico()">Actualizar stock</button>
+        </div>
+        <div id="stock-aviso"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+// =====================================================================
+// CONFIGURACIÓN — completar con los datos reales del proyecto Supabase
+// =====================================================================
+const SUPABASE_URL = 'https://stwjzrlurmcclaoeqyzb.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0d2p6cmx1cm1jY2xhb2VxeXpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MzU0MjIsImV4cCI6MjEwNTExMTQyMn0.J0zuE9X2qvOmjhOMReMTOx94iAlEvQfjhh8UWh-f_LQ';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let perfilActual = null;   // { id, nombre, rol }
+let tabActiva = 'herraje';
+let materialesCache = [];  // para el buscador de recepciones
+
+// ---------------------------------------------------------------------
+// AUTENTICACIÓN
+// ---------------------------------------------------------------------
+async function iniciarSesion() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const err = document.getElementById('login-error');
+  err.style.display = 'none';
+
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+  if (error) {
+    err.textContent = 'No se pudo ingresar: ' + error.message;
+    err.style.display = 'block';
+    return;
+  }
+  await cargarPerfil();
+}
+
+async function cargarPerfil() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  const { data, error } = await sb.from('perfiles').select('id, nombre, rol').eq('id', user.id).single();
+  if (error || !data) {
+    document.getElementById('login-error').textContent =
+      'Tu usuario existe pero no tiene perfil asignado. Pedile a compras que te agregue en la tabla perfiles.';
+    document.getElementById('login-error').style.display = 'block';
+    return;
+  }
+  perfilActual = data;
+  document.getElementById('nombre-usuario').textContent = `${data.nombre} (${data.rol})`;
+  document.getElementById('pantalla-login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  if (data.rol === 'comprador' || data.rol === 'deposito') {
+    document.querySelectorAll('.solo-comprador').forEach(el => el.style.display = 'inline-block');
+  }
+  await cargarTodo();
+}
+
+async function cerrarSesion() {
+  await sb.auth.signOut();
+  perfilActual = null;
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('pantalla-login').style.display = 'flex';
+}
+
+// ---------------------------------------------------------------------
+// TABS
+// ---------------------------------------------------------------------
+function cambiarTab(tab) {
+  tabActiva = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('activa', b.dataset.tab === tab));
+  document.querySelectorAll('.seccion').forEach(s => s.classList.remove('activa'));
+  document.getElementById('sec-' + tab).classList.add('activa');
+}
+
+// ---------------------------------------------------------------------
+// CARGA DE PEDIDOS PENDIENTES (v_pendientes + v_estado_pedidos)
+// ---------------------------------------------------------------------
+let datosPendientes = { herraje: [], insumo: [] };
+let datosCerrados = { herraje: [], insumo: [] };
+let estadosPedidos = {};  // numero -> {estado, materiales_pendientes, materiales_totales}
+
+// Supabase/PostgREST corta cada respuesta en 1000 filas por default.
+// Esta función pagina hasta traer todo — construirQuery debe devolver
+// un query NUEVO cada vez que se la llama (no un builder ya usado).
+async function obtenerTodasLasFilas(construirQuery, tamanoPagina = 1000) {
+  let desde = 0;
+  let todo = [];
+  while (true) {
+    const { data, error } = await construirQuery().range(desde, desde + tamanoPagina - 1);
+    if (error) return { data: null, error };
+    if (!data || data.length === 0) break;
+    todo = todo.concat(data);
+    if (data.length < tamanoPagina) break;
+    desde += tamanoPagina;
+  }
+  return { data: todo, error: null };
+}
+
+async function cargarTodo() {
+  const { data: pend, error: e1 } = await obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*'));
+  const { data: estados, error: e2 } = await obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*'));
+  if (e1 || e2) {
+    console.error(e1, e2);
+    return;
+  }
+  datosPendientes.herraje = pend.filter(p => p.material_rubro === 'herraje');
+  datosPendientes.insumo = pend.filter(p => p.material_rubro === 'insumo');
+  estadosPedidos = {};
+  estados.forEach(e => estadosPedidos[e.numero] = e);
+
+  // Requerimientos cerrados a mano (activo = false) — no viven en
+  // v_pendientes porque esa vista solo trae requerimientos activos.
+  const { data: cerrados } = await obtenerTodasLasFilas(() => sb
+    .from('requerimientos')
+    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida')
+    .eq('activo', false));
+  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada'));
+  const infoPorPedido = {};
+  (pedidosInfo || []).forEach(p => infoPorPedido[p.numero] = p);
+  const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor'));
+  const nombrePorMaterial = {};
+  (matsInfo || []).forEach(m => nombrePorMaterial[m.codigo + '|' + m.rubro] = m);
+
+  datosCerrados = { herraje: [], insumo: [] };
+  (cerrados || []).forEach(r => {
+    const info = infoPorPedido[r.pedido_numero] || {};
+    const mat = nombrePorMaterial[r.material_codigo + '|' + r.material_rubro] || {};
+    datosCerrados[r.material_rubro].push({
+      requerimiento_id: r.id,
+      pedido_numero: r.pedido_numero,
+      cliente: info.cliente,
+      fecha_pactada: info.fecha_pactada,
+      material_codigo: r.material_codigo,
+      material_nombre: mat.nombre,
+      proveedor: mat.proveedor,
+      cantidad_requerida: r.cantidad_requerida,
+      pendiente: 0,
+    });
+  });
+
+  materialesCache = [];
+  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor'));
+  if (mats) materialesCache = mats;
+
+  renderizarPedidos('herraje');
+  renderizarPedidos('insumo');
+}
+
+function renderizarPedidos(rubro) {
+  const vista = document.getElementById('vista-' + rubro).value;
+  const thead = document.getElementById('thead-' + rubro);
+  if (vista === 'material') {
+    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
+    renderizarPorMaterial(rubro);
+  } else {
+    thead.innerHTML = '<tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>';
+    renderizarPorPedido(rubro);
+  }
+}
+
+function renderizarPorPedido(rubro) {
+  const filtroTexto = (document.getElementById('filtro-' + rubro).value || '').toLowerCase();
+  const filtroEstado = document.getElementById('estado-' + rubro).value;
+  const ocultarCubierto = document.getElementById('ocultar-cubierto-' + rubro).checked;
+  const tbody = document.getElementById('tbody-' + rubro);
+  tbody.innerHTML = '';
+
+  const esVistaCerrados = filtroEstado === 'cerrado_manual';
+  const fuente = esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro];
+
+  // agrupar por pedido
+  const porPedido = {};
+  fuente.forEach(fila => {
+    if (!porPedido[fila.pedido_numero]) porPedido[fila.pedido_numero] = [];
+    porPedido[fila.pedido_numero].push(fila);
+  });
+
+  const pedidosOrdenados = Object.keys(porPedido)
+    .map(n => parseInt(n))
+    .sort((a, b) => {
+      const fa = porPedido[a][0].fecha_pactada || '';
+      const fb = porPedido[b][0].fecha_pactada || '';
+      return fa.localeCompare(fb);
+    });
+
+  pedidosOrdenados.forEach(numero => {
+    const materiales = porPedido[numero];
+    const estado = estadosPedidos[numero] || { estado: 'en_produccion', materiales_pendientes: '?', materiales_totales: '?' };
+    const cliente = materiales[0].cliente || '';
+    const fecha = materiales[0].fecha_pactada || '';
+
+    const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
+    if (filtroTexto && !textoBusqueda.includes(filtroTexto)) return;
+    if (!esVistaCerrados && filtroEstado !== 'todos' && estado.estado !== filtroEstado) return;
+    if (!esVistaCerrados && ocultarCubierto && estado.estado === 'entregado') return;
+
+    const trPedido = document.createElement('tr');
+    trPedido.className = 'fila-pedido';
+    trPedido.onclick = () => {
+      const det = document.getElementById('det-' + rubro + '-' + numero);
+      det.style.display = det.style.display === 'none' ? 'table-row' : 'none';
+    };
+    trPedido.innerHTML = `
+      <td><strong>${numero}</strong></td>
+      <td>${cliente}</td>
+      <td id="fecha-vista-${rubro}-${numero}">
+        <span>${fecha}</span>
+        <button style="border:none;background:none;cursor:pointer;color:var(--gris-claro);font-size:11px;"
+                onclick="event.stopPropagation(); editarFecha(${numero}, '${rubro}', '${fecha}')">✎</button>
+      </td>
+      <td>${esVistaCerrados ? '—' : estado.materiales_pendientes + ' de ' + estado.materiales_totales}</td>
+      <td>
+        ${esVistaCerrados
+          ? '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>'
+          : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Entregado' : 'En producción'}</span>
+             ${materiales.some(m => m.prioridad_manual) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
+        }
+      </td>
+    `;
+    tbody.appendChild(trPedido);
+
+    const trDetalle = document.createElement('tr');
+    trDetalle.className = 'detalle';
+    trDetalle.id = 'det-' + rubro + '-' + numero;
+    trDetalle.style.display = 'none';
+
+    // Agrupar por material: el mismo material puede pedirse en varias
+    // estructuras/piezas del pedido (varias líneas de "rgln") — acá
+    // se suman para mostrar un solo renglón por material.
+    const porMaterial = {};
+    materiales.forEach(m => {
+      if (!porMaterial[m.material_codigo]) {
+        porMaterial[m.material_codigo] = {
+          nombre: m.material_nombre,
+          proveedor: m.proveedor,
+          requerido: 0,
+          pendiente: 0,
+        };
+      }
+      porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
+      porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
+    });
+
+    const filasMat = Object.entries(porMaterial)
+      .filter(([, m]) => !ocultarCubierto || m.pendiente > 0)
+      .map(([codigo, m]) => `
+      <tr>
+        <td>${codigo}</td>
+        <td>${m.nombre}</td>
+        <td>${m.requerido}</td>
+        <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${m.pendiente}</td>
+        <td>${m.proveedor || ''}</td>
+      </tr>
+    `).join('');
+
+    const botones = esVistaCerrados
+      ? `<button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px;"
+                 onclick="event.stopPropagation(); reabrirPedido(${numero}, '${rubro}')">
+           Reabrir pedido
+         </button>`
+      : (() => {
+          const yaPriorizado = materiales.every(m => m.prioridad_manual);
+          return `
+            <button class="primario" style="margin-top:8px; margin-right:6px; font-size:12px; padding:5px 10px;"
+                    onclick="event.stopPropagation(); priorizarPedido(${numero}, '${rubro}', ${yaPriorizado})">
+              ${yaPriorizado ? 'Quitar prioridad' : 'Priorizar este pedido'}
+            </button>
+            <button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px; background:var(--gris-claro);"
+                    onclick="event.stopPropagation(); marcarEntregadoManual(${numero}, '${rubro}')">
+              Marcar como entregado
+            </button>
+          `;
+        })();
+
+    trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
+      <table>
+        <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th></tr></thead>
+        <tbody>${filasMat}</tbody>
+      </table>
+      ${botones}
+    </div></td>`;
+    tbody.appendChild(trDetalle);
+  });
+
+  if (pedidosOrdenados.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
+  }
+}
+
+// ---------------------------------------------------------------------
+// VISTA POR MATERIAL: agrupa por material y al expandir muestra qué
+// pedidos lo tienen pendiente.
+// ---------------------------------------------------------------------
+function renderizarPorMaterial(rubro) {
+  const filtroTexto = (document.getElementById('filtro-' + rubro).value || '').toLowerCase();
+  const filtroEstado = document.getElementById('estado-' + rubro).value;
+  const ocultarCubierto = document.getElementById('ocultar-cubierto-' + rubro).checked;
+  const tbody = document.getElementById('tbody-' + rubro);
+  tbody.innerHTML = '';
+
+  const esVistaCerrados = filtroEstado === 'cerrado_manual';
+  const fuente = esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro];
+
+  const porMaterial = {};
+  fuente.forEach(fila => {
+    const estadoPedido = estadosPedidos[fila.pedido_numero] || { estado: 'en_produccion' };
+    if (!esVistaCerrados && filtroEstado !== 'todos' && estadoPedido.estado !== filtroEstado) return;
+
+    if (!porMaterial[fila.material_codigo]) {
+      porMaterial[fila.material_codigo] = {
+        nombre: fila.material_nombre,
+        proveedor: fila.proveedor,
+        pedidos: {},
+      };
+    }
+    const grupo = porMaterial[fila.material_codigo];
+    if (!grupo.pedidos[fila.pedido_numero]) {
+      grupo.pedidos[fila.pedido_numero] = {
+        cliente: fila.cliente,
+        fecha_pactada: fila.fecha_pactada,
+        estado: estadoPedido.estado,
+        requerido: 0,
+        pendiente: 0,
+      };
+    }
+    grupo.pedidos[fila.pedido_numero].requerido += Number(fila.cantidad_requerida);
+    grupo.pedidos[fila.pedido_numero].pendiente += Number(fila.pendiente);
+  });
+
+  const codigosOrdenados = Object.keys(porMaterial)
+    .filter(codigo => {
+      const g = porMaterial[codigo];
+      const texto = (codigo + ' ' + g.nombre + ' ' + Object.keys(g.pedidos).join(' ')).toLowerCase();
+      return !filtroTexto || texto.includes(filtroTexto);
+    })
+    .sort((a, b) => (porMaterial[a].nombre || '').localeCompare(porMaterial[b].nombre || ''));
+
+  codigosOrdenados.forEach(codigo => {
+    const g = porMaterial[codigo];
+    const pedidosDelMaterial = Object.entries(g.pedidos)
+      .filter(([, p]) => !ocultarCubierto || p.pendiente > 0);
+    if (pedidosDelMaterial.length === 0) return;
+    const pendienteTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.pendiente, 0);
+
+    const trMat = document.createElement('tr');
+    trMat.className = 'fila-pedido';
+    trMat.onclick = () => {
+      const det = document.getElementById('detmat-' + rubro + '-' + codigo);
+      det.style.display = det.style.display === 'none' ? 'table-row' : 'none';
+    };
+    trMat.innerHTML = `
+      <td><strong>${codigo}</strong></td>
+      <td>${g.nombre || ''}</td>
+      <td>${g.proveedor || ''}</td>
+      <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${pendienteTotal}</td>
+      <td>${pedidosDelMaterial.length}</td>
+    `;
+    tbody.appendChild(trMat);
+
+    const filasPedido = pedidosDelMaterial
+      .sort((a, b) => (a[1].fecha_pactada || '').localeCompare(b[1].fecha_pactada || ''))
+      .map(([numero, p]) => `
+        <tr>
+          <td>${numero}</td>
+          <td>${p.cliente || ''}</td>
+          <td>${p.fecha_pactada || ''}</td>
+          <td>${p.requerido}</td>
+          <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${p.pendiente}</td>
+          <td>${esVistaCerrados ? 'Cerrado manualmente' : (p.estado === 'entregado' ? 'Entregado' : 'En producción')}</td>
+        </tr>
+      `).join('');
+
+    const trDetalle = document.createElement('tr');
+    trDetalle.className = 'detalle';
+    trDetalle.id = 'detmat-' + rubro + '-' + codigo;
+    trDetalle.style.display = 'none';
+    trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
+      <table>
+        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Requerido</th><th>Pendiente</th><th>Estado</th></tr></thead>
+        <tbody>${filasPedido}</tbody>
+      </table>
+    </div></td>`;
+    tbody.appendChild(trDetalle);
+  });
+
+  if (codigosOrdenados.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+  }
+}
+
+// ---------------------------------------------------------------------
+// EDITAR FECHA PACTADA (mueve el pedido en la cola FIFO por antigüedad real)
+// ---------------------------------------------------------------------
+async function editarFecha(numero, rubro, fechaActual) {
+  const nueva = prompt(`Nueva fecha pactada para el pedido ${numero} (formato AAAA-MM-DD):`, fechaActual || '');
+  if (nueva === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(nueva.trim())) {
+    alert('Formato de fecha inválido. Usá AAAA-MM-DD, por ejemplo 2026-10-15.');
+    return;
+  }
+  const { error } = await sb.from('pedidos').update({ fecha_pactada: nueva.trim() }).eq('numero', numero);
+  if (error) {
+    alert('No se pudo actualizar la fecha: ' + error.message);
+    return;
+  }
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// MARCAR / REABRIR ENTREGADO MANUAL
+// ---------------------------------------------------------------------
+async function marcarEntregadoManual(numero, rubro) {
+  if (!confirm(`¿Marcar el pedido ${numero} (${rubro}) como entregado? Va a salir de la lista de pendientes y de la cola de reparto de stock. Podés reabrirlo después desde "Cerrados manualmente".`)) return;
+  const { error } = await sb
+    .from('requerimientos')
+    .update({ activo: false })
+    .eq('pedido_numero', numero)
+    .eq('material_rubro', rubro)
+    .eq('activo', true);
+  if (error) {
+    alert('No se pudo cerrar el pedido: ' + error.message);
+    return;
+  }
+  await cargarTodo();
+}
+
+async function reabrirPedido(numero, rubro) {
+  const { error } = await sb
+    .from('requerimientos')
+    .update({ activo: true })
+    .eq('pedido_numero', numero)
+    .eq('material_rubro', rubro)
+    .eq('activo', false);
+  if (error) {
+    alert('No se pudo reabrir el pedido: ' + error.message);
+    return;
+  }
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// PRIORIZAR PEDIDO (adelantarlo en la cola FIFO de stock disponible)
+// ---------------------------------------------------------------------
+async function priorizarPedido(numero, rubro, quitar) {
+  const nuevoValor = !quitar;
+  const { error } = await sb
+    .from('requerimientos')
+    .update({
+      prioridad_manual: nuevoValor,
+      prioridad_marcada_en: nuevoValor ? new Date().toISOString() : null,
+    })
+    .eq('pedido_numero', numero)
+    .eq('material_rubro', rubro)
+    .eq('activo', true);
+
+  if (error) {
+    alert('No se pudo actualizar la prioridad: ' + error.message);
+    return;
+  }
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// RECEPCIONES
+// ---------------------------------------------------------------------
+function buscarMateriales() {
+  const rubro = document.getElementById('rec-rubro').value;
+  const q = document.getElementById('rec-material-busqueda').value.toLowerCase();
+  const cont = document.getElementById('rec-sugerencias');
+  if (!q) { cont.innerHTML = ''; return; }
+  const coincidencias = materialesCache
+    .filter(m => m.rubro === rubro)
+    .filter(m => String(m.codigo).includes(q) || (m.nombre || '').toLowerCase().includes(q))
+    .slice(0, 8);
+  cont.innerHTML = coincidencias.map(m =>
+    `<div style="cursor:pointer; padding:3px 0;" onclick="seleccionarMaterial(${m.codigo}, '${m.rubro}', '${(m.nombre || '').replace(/'/g, "")}')">
+      ${m.codigo} — ${m.nombre} (${m.proveedor || 'sin proveedor'})
+    </div>`
+  ).join('') || '<div>Sin coincidencias</div>';
+}
+
+let materialSeleccionado = null;
+function seleccionarMaterial(codigo, rubro, nombre) {
+  materialSeleccionado = { codigo, rubro };
+  document.getElementById('rec-material-busqueda').value = `${codigo} — ${nombre}`;
+  document.getElementById('rec-sugerencias').innerHTML = '';
+}
+
+async function cargarRecepcion() {
+  const aviso = document.getElementById('rec-aviso');
+  aviso.innerHTML = '';
+  if (!materialSeleccionado) {
+    aviso.innerHTML = '<div class="aviso error">Elegí un material de la lista de sugerencias.</div>';
+    return;
+  }
+  const cantidad = parseFloat(document.getElementById('rec-cantidad').value);
+  if (!cantidad || cantidad <= 0) {
+    aviso.innerHTML = '<div class="aviso error">Ingresá una cantidad mayor a 0.</div>';
+    return;
+  }
+  const pedidoTxt = document.getElementById('rec-pedido').value.trim();
+  const pedido_numero = pedidoTxt ? parseInt(pedidoTxt) : null;
+
+  const { error } = await sb.from('recepciones').insert({
+    material_codigo: materialSeleccionado.codigo,
+    material_rubro: materialSeleccionado.rubro,
+    cantidad,
+    pedido_numero,
+    usuario_id: perfilActual.id,
+  });
+
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo registrar: ${error.message}</div>`;
+    return;
+  }
+  aviso.innerHTML = '<div class="aviso ok">Recepción registrada.</div>';
+  document.getElementById('rec-cantidad').value = '';
+  document.getElementById('rec-pedido').value = '';
+  document.getElementById('rec-material-busqueda').value = '';
+  materialSeleccionado = null;
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// IMPORTAR EXPORT DEL ERP (el .xls real es HTML de una grilla ASP.NET)
+// ---------------------------------------------------------------------
+const COLUMNAS = {
+  herraje: { codigo: 'IDH', nombre: 'Material', umed: 'UMed', proveedor: 'Proveedor',
+             stock: 'Stock', pedido: 'Pedido', rgln: 'Rgln', estructura: 'Estructura',
+             cantidad: 'Req', fecha_pactada: 'FPactada', cliente: 'Cliente' },
+  insumo:  { codigo: 'CodI', nombre: 'Insumo', umed: 'Udad', proveedor: 'Proveedor',
+             stock: 'Stock', pedido: 'Pedido', rgln: 'Rgln', estructura: 'Estructura',
+             cantidad: 'CantReq', fecha_pactada: 'FPactada', cliente: 'Cliente' },
+};
+
+function parsearFechaArgentina(txt) {
+  if (!txt) return null;
+  const m = txt.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (!m) return null;
+  let [, d, mo, y] = m;
+  if (y.length === 2) y = '20' + y;
+  return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+}
+
+function leerTablaHTML(texto) {
+  const doc = new DOMParser().parseFromString(texto, 'text/html');
+  const tabla = doc.querySelector('table');
+  if (!tabla) throw new Error('No se encontró ninguna tabla en el archivo.');
+  const filas = Array.from(tabla.querySelectorAll('tr'));
+  if (filas.length < 2) throw new Error('La tabla no tiene filas de datos.');
+  const encabezados = Array.from(filas[0].querySelectorAll('th,td')).map(c => c.textContent.trim());
+  const registros = filas.slice(1).map(tr => {
+    const celdas = Array.from(tr.querySelectorAll('td'));
+    const obj = {};
+    encabezados.forEach((h, i) => obj[h] = celdas[i] ? celdas[i].textContent.trim() : '');
+    return obj;
+  }).filter(r => Object.values(r).some(v => v !== ''));
+  return registros;
+}
+
+async function importarArchivo() {
+  const aviso = document.getElementById('imp-aviso');
+  aviso.innerHTML = '<div class="aviso info">Procesando...</div>';
+  const rubro = document.getElementById('imp-rubro').value;
+  const archivoInput = document.getElementById('imp-archivo');
+  if (!archivoInput.files.length) {
+    aviso.innerHTML = '<div class="aviso error">Elegí un archivo primero.</div>';
+    return;
+  }
+  const col = COLUMNAS[rubro];
+  const texto = await archivoInput.files[0].text();
+
+  let registros;
+  try {
+    registros = leerTablaHTML(texto);
+  } catch (e) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo leer el archivo: ${e.message}</div>`;
+    return;
+  }
+
+  // Normalizar y agregar duplicados (pedido, rgln, codigo) dentro del mismo archivo
+  const agregados = {};
+  registros.forEach(r => {
+    const codigo = parseInt(r[col.codigo]);
+    const pedido = parseInt(r[col.pedido]);
+    const rgln = parseInt(r[col.rgln]);
+    if (!codigo || !pedido || Number.isNaN(rgln)) return;
+    const clave = `${pedido}|${rgln}|${codigo}`;
+    const cantidad = parseFloat((r[col.cantidad] || '0').replace(',', '.')) || 0;
+    if (!agregados[clave]) {
+      agregados[clave] = {
+        codigo, pedido, rgln,
+        nombre: r[col.nombre] || '',
+        umed: r[col.umed] || '',
+        proveedor: r[col.proveedor] || '',
+        stock: parseFloat((r[col.stock] || '0').replace(',', '.')) || null,
+        estructura: r[col.estructura] || '',
+        cantidad: 0,
+        fecha_pactada: parsearFechaArgentina(r[col.fecha_pactada]),
+        cliente: r[col.cliente] || null,
+      };
+    }
+    agregados[clave].cantidad += cantidad;
+  });
+  const filas = Object.values(agregados);
+  if (filas.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">No se pudo interpretar ninguna fila válida del archivo. Revisá que sea el export correcto para este rubro.</div>';
+    return;
+  }
+
+  // 1) materiales: upsert normal (esto sí se actualiza)
+  const materialesUnicos = {};
+  filas.forEach(f => materialesUnicos[f.codigo] = f);
+  const filasMateriales = Object.values(materialesUnicos).map(f => ({
+    codigo: f.codigo, rubro, nombre: f.nombre, umed: f.umed,
+    proveedor: f.proveedor, stock_ultimo: f.stock,
+  }));
+  const { error: errMat } = await sb.from('materiales').upsert(filasMateriales, { onConflict: 'codigo,rubro' });
+  if (errMat) {
+    aviso.innerHTML = `<div class="aviso error">Error guardando materiales: ${errMat.message}</div>`;
+    return;
+  }
+
+  // 2) pedidos: insertar solo si no existen (aditivo — nunca pisa)
+  const pedidosUnicos = {};
+  filas.forEach(f => pedidosUnicos[f.pedido] = f);
+  const filasPedidos = Object.values(pedidosUnicos).map(f => ({
+    numero: f.pedido, cliente: f.cliente, fecha_pactada: f.fecha_pactada,
+  }));
+  const { data: pedidosInsertados, error: errPed } = await sb
+    .from('pedidos')
+    .upsert(filasPedidos, { onConflict: 'numero', ignoreDuplicates: true })
+    .select();
+  if (errPed) {
+    aviso.innerHTML = `<div class="aviso error">Error guardando pedidos: ${errPed.message}</div>`;
+    return;
+  }
+
+  // 3) requerimientos: insertar solo si no existen (aditivo — nunca pisa)
+  const filasReq = filas.map(f => ({
+    pedido_numero: f.pedido, rgln: f.rgln, material_codigo: f.codigo,
+    material_rubro: rubro, estructura: f.estructura, cantidad_requerida: f.cantidad,
+  }));
+  const { data: reqInsertados, error: errReq } = await sb
+    .from('requerimientos')
+    .upsert(filasReq, { onConflict: 'pedido_numero,rgln,material_codigo,material_rubro', ignoreDuplicates: true })
+    .select();
+  if (errReq) {
+    aviso.innerHTML = `<div class="aviso error">Error guardando requerimientos: ${errReq.message}</div>`;
+    return;
+  }
+
+  const nuevosPedidos = (pedidosInsertados || []).length;
+  const nuevosReq = (reqInsertados || []).length;
+  const anomalias = filasReq.length - nuevosReq;
+
+  await sb.from('imports_log').insert({
+    rubro, archivo: archivoInput.files[0].name, filas_leidas: registros.length,
+    pedidos_nuevos: nuevosPedidos, filas_nuevas: nuevosReq,
+    filas_actualizadas: anomalias, usuario_id: perfilActual.id,
+  });
+
+  let mensaje = `<div class="aviso ok">Importado: ${nuevosPedidos} pedidos nuevos, ${nuevosReq} requerimientos nuevos.</div>`;
+  if (anomalias > 0) {
+    mensaje += `<div class="aviso info">${anomalias} líneas ya existían en la base y no se modificaron — si esperabas que fueran nuevas, revisá el archivo.</div>`;
+  }
+  aviso.innerHTML = mensaje;
+  archivoInput.value = '';
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// STOCK FÍSICO (planilla real .xlsx/.csv, vía SheetJS)
+// ---------------------------------------------------------------------
+async function importarStockFisico() {
+  const aviso = document.getElementById('stock-aviso');
+  aviso.innerHTML = '<div class="aviso info">Procesando...</div>';
+  const rubro = document.getElementById('stock-rubro').value;
+  const input = document.getElementById('stock-archivo');
+  if (!input.files.length) {
+    aviso.innerHTML = '<div class="aviso error">Elegí un archivo primero.</div>';
+    return;
+  }
+  const archivo = input.files[0];
+  const buffer = await archivo.arrayBuffer();
+  const libro = XLSX.read(buffer, { type: 'array' });
+  const hoja = libro.Sheets[libro.SheetNames[0]];
+  const filas = XLSX.utils.sheet_to_json(hoja, { defval: '' });
+
+  if (filas.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">La planilla no tiene filas de datos, o no se pudo leer la primera hoja.</div>';
+    return;
+  }
+
+  // Detectar columnas código/cantidad sin importar mayúsculas ni acentos
+  const claves = Object.keys(filas[0]);
+  const claveCodigo = claves.find(k => k.trim().toLowerCase().startsWith('codigo') || k.trim().toLowerCase().startsWith('código'));
+  const claveCantidad = claves.find(k => k.trim().toLowerCase().startsWith('cantidad'));
+  if (!claveCodigo || !claveCantidad) {
+    aviso.innerHTML = `<div class="aviso error">No encontré columnas "codigo" y "cantidad" en la planilla. Columnas detectadas: ${claves.join(', ')}</div>`;
+    return;
+  }
+
+  const registros = filas
+    .map(f => ({
+      material_codigo: parseInt(f[claveCodigo]),
+      material_rubro: rubro,
+      cantidad: parseFloat(String(f[claveCantidad]).replace(',', '.')),
+      usuario_id: perfilActual.id,
+      archivo: archivo.name,
+    }))
+    .filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad));
+
+  if (registros.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">Ninguna fila tenía código y cantidad numéricos válidos.</div>';
+    return;
+  }
+  if (registros.length !== filas.length) {
+    aviso.innerHTML = `<div class="aviso info">Atención: ${filas.length - registros.length} fila(s) se descartaron por no tener código o cantidad numéricos.</div>`;
+  }
+
+  // Dar de alta en el catálogo los materiales que la planilla trae y
+  // todavía no existen (la planilla de stock suele cubrir más
+  // materiales de los que ya aparecieron en algún import de pedidos).
+  const { data: existentes } = await obtenerTodasLasFilas(() => sb
+    .from('materiales')
+    .select('codigo')
+    .eq('rubro', rubro));
+  const codigosExistentes = new Set((existentes || []).map(m => m.codigo));
+  const nuevosMateriales = [...new Set(registros.map(r => r.material_codigo))]
+    .filter(c => !codigosExistentes.has(c))
+    .map(codigo => ({ codigo, rubro, nombre: `Material ${codigo} (alta por conteo de stock)` }));
+
+  if (nuevosMateriales.length > 0) {
+    const { error: errNuevo } = await sb.from('materiales').upsert(nuevosMateriales, { onConflict: 'codigo,rubro' });
+    if (errNuevo) {
+      aviso.innerHTML = `<div class="aviso error">Error dando de alta materiales nuevos: ${errNuevo.message}</div>`;
+      return;
+    }
+  }
+
+  const { error } = await sb.from('conteos_stock').insert(registros);
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">Error al guardar: ${error.message}</div>`;
+    return;
+  }
+
+  let mensaje = `<div class="aviso ok">Stock actualizado: ${registros.length} materiales de rubro "${rubro}" con conteo nuevo a partir de ahora.</div>`;
+  if (nuevosMateriales.length > 0) {
+    mensaje += `<div class="aviso info">${nuevosMateriales.length} de esos materiales no existían en el catálogo y se dieron de alta con nombre provisorio — cuando el import del ERP los traiga con su nombre real, se va a actualizar solo.</div>`;
+  }
+  aviso.innerHTML = mensaje;
+  input.value = '';
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// INICIO: si ya hay sesión activa (recarga de página), entrar directo
+// ---------------------------------------------------------------------
+(async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) await cargarPerfil();
+})();
+</script>
+</body>
+</html>
