@@ -224,6 +224,7 @@
     <button data-tab="recepcion" class="tab-btn" onclick="cambiarTab('recepcion')">Cargar recepción</button>
     <button data-tab="importar" class="tab-btn solo-comprador" onclick="cambiarTab('importar')">Importar del sistema</button>
     <button data-tab="stock" class="tab-btn solo-comprador" onclick="cambiarTab('stock')">Actualizar stock físico</button>
+    <button data-tab="catalogo" class="tab-btn solo-comprador" onclick="cambiarTab('catalogo')">Catálogo / factores</button>
   </nav>
 
   <main>
@@ -330,9 +331,13 @@
       <div class="panel">
         <h2>Actualizar stock físico</h2>
         <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
-          Subí una planilla con el stock real contado en fábrica. Columnas esperadas: <strong>codigo</strong> y <strong>cantidad</strong>
-          (los nombres de columna no distinguen mayúsculas). Cada carga reemplaza, para adelante, el cálculo de disponible de esos
-          materiales — no se suma a conteos anteriores. Podés subirla tantas veces como hagas el conteo físico (semanal, mensual, etc).
+          Subí una planilla con el stock real contado en fábrica, en la unidad en que lo contás
+          (ej: placas, rollos). Columnas esperadas: <strong>codigo</strong> y <strong>cantidad</strong>
+          (los nombres de columna no distinguen mayúsculas). Si el material tiene un factor de
+          conversión cargado en "Catálogo / factores", la cantidad se convierte sola a la unidad en
+          que se piden los materiales (ej: placas → m²) antes de compararla contra lo pendiente.
+          Cada carga reemplaza, para adelante, el cálculo de disponible de esos materiales — no se
+          suma a conteos anteriores.
         </p>
         <div class="fila-form">
           <label>Rubro de la planilla
@@ -347,6 +352,33 @@
           <button class="primario" onclick="importarStockFisico()">Actualizar stock</button>
         </div>
         <div id="stock-aviso"></div>
+      </div>
+    </section>
+
+    <!-- CATALOGO / FACTORES DE CONVERSION -->
+    <section id="sec-catalogo" class="seccion">
+      <div class="panel">
+        <h2>Catálogo de materiales — unidad de conteo y factor de conversión</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Para materiales que se piden en una unidad (ej: m²) pero se cuentan físicamente en otra
+          (ej: placas), cargá acá cuántas unidades de pedido tiene una unidad de conteo — por
+          ejemplo, si una placa de MDF tiene 5,032 m², el factor es <strong>5.032</strong>.
+          Materiales que se cuentan igual que se piden (tornillos, bisagras) dejalos en factor 1.
+        </p>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="cat-rubro" onchange="cargarCatalogo()">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Buscar
+            <input type="text" id="cat-busqueda" placeholder="Código o nombre..." oninput="cargarCatalogo()">
+          </label>
+        </div>
+        <table class="pedidos"><thead>
+          <tr><th>Código</th><th>Nombre</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th></th></tr>
+        </thead><tbody id="tbody-catalogo"></tbody></table>
       </div>
     </section>
   </main>
@@ -418,6 +450,7 @@ function cambiarTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('activa', b.dataset.tab === tab));
   document.querySelectorAll('.seccion').forEach(s => s.classList.remove('activa'));
   document.getElementById('sec-' + tab).classList.add('activa');
+  if (tab === 'catalogo') cargarCatalogo();
 }
 
 // ---------------------------------------------------------------------
@@ -1018,8 +1051,93 @@ async function importarArchivo() {
 }
 
 // ---------------------------------------------------------------------
+// CATÁLOGO / FACTORES DE CONVERSIÓN
+// ---------------------------------------------------------------------
+async function cargarCatalogo() {
+  const rubro = document.getElementById('cat-rubro').value;
+  const q = (document.getElementById('cat-busqueda').value || '').toLowerCase();
+  const tbody = document.getElementById('tbody-catalogo');
+  tbody.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
+
+  const { data, error } = await obtenerTodasLasFilas(() => sb
+    .from('materiales')
+    .select('codigo, nombre, umed, unidad_conteo, factor_conversion')
+    .eq('rubro', rubro));
+
+  if (error) {
+    tbody.innerHTML = `<tr><td colspan="6">Error: ${error.message}</td></tr>`;
+    return;
+  }
+
+  const filtrados = (data || [])
+    .filter(m => !q || String(m.codigo).includes(q) || (m.nombre || '').toLowerCase().includes(q))
+    .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+
+  tbody.innerHTML = '';
+  if (filtrados.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    return;
+  }
+
+  filtrados.forEach(m => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${m.codigo}</td>
+      <td>${m.nombre || ''}</td>
+      <td>${m.umed || ''}</td>
+      <td><input type="text" id="unidconteo-${rubro}-${m.codigo}" value="${m.unidad_conteo || ''}" placeholder="ej: placas" style="width:100px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
+      <td><input type="number" step="any" min="0" id="factor-${rubro}-${m.codigo}" value="${m.factor_conversion}" style="width:90px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
+      <td><button class="primario" style="font-size:12px; padding:4px 10px;" onclick="guardarFactor(${m.codigo}, '${rubro}')">Guardar</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function guardarFactor(codigo, rubro) {
+  const unidad_conteo = document.getElementById(`unidconteo-${rubro}-${codigo}`).value.trim() || null;
+  const factorTxt = document.getElementById(`factor-${rubro}-${codigo}`).value;
+  const factor_conversion = parseFloat(factorTxt);
+  if (!Number.isFinite(factor_conversion) || factor_conversion <= 0) {
+    alert('El factor tiene que ser un número mayor a 0.');
+    return;
+  }
+  const { error } = await sb
+    .from('materiales')
+    .update({ unidad_conteo, factor_conversion })
+    .eq('codigo', codigo)
+    .eq('rubro', rubro);
+  if (error) {
+    alert('No se pudo guardar: ' + error.message);
+    return;
+  }
+  alert(`Guardado: ${codigo} — factor ${factor_conversion}${unidad_conteo ? ' (' + unidad_conteo + ')' : ''}.`);
+}
+
+// ---------------------------------------------------------------------
 // STOCK FÍSICO (planilla real .xlsx/.csv, vía SheetJS)
 // ---------------------------------------------------------------------
+// Factores de conversión por categoría (columna "RUBRO" de la planilla
+// de stock físico de insumos) — 1 unidad contada (ej: 1 placa) equivale
+// a tantas unidades de pedido (ej: m2). Se aplica por texto de categoría,
+// no por código individual, así no hay que cargar material por material.
+const FACTORES_POR_CATEGORIA = {
+  'acrilicos': 3.9,
+  'aglomerado crudo': 5.032,
+  'fondos': 5.032,
+  'mdf crudo': 5.032,
+  'mdf mel': 5.032,
+  'spc': 5.032,
+  'formicas': 3.85,
+  'laminados karikal': 3.73,
+};
+
+function normalizarTexto(txt) {
+  return String(txt || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // saca acentos
+}
+
 async function importarStockFisico() {
   const aviso = document.getElementById('stock-aviso');
   aviso.innerHTML = '<div class="aviso info">Procesando...</div>';
@@ -1040,44 +1158,46 @@ async function importarStockFisico() {
     return;
   }
 
-  // Detectar columnas código/cantidad sin importar mayúsculas ni acentos
+  // Detectar columnas código/cantidad/rubro sin importar mayúsculas ni acentos
   const claves = Object.keys(filas[0]);
   const claveCodigo = claves.find(k => k.trim().toLowerCase().startsWith('codigo') || k.trim().toLowerCase().startsWith('código'));
   const claveCantidad = claves.find(k => k.trim().toLowerCase().startsWith('cantidad'));
+  const claveCategoria = claves.find(k => k.trim().toLowerCase() === 'rubro');
   if (!claveCodigo || !claveCantidad) {
     aviso.innerHTML = `<div class="aviso error">No encontré columnas "codigo" y "cantidad" en la planilla. Columnas detectadas: ${claves.join(', ')}</div>`;
     return;
   }
 
-  const registros = filas
+  const categoriasSinMapear = new Set();
+
+  const crudos = filas
     .map(f => ({
       material_codigo: parseInt(f[claveCodigo]),
-      material_rubro: rubro,
-      cantidad: parseFloat(String(f[claveCantidad]).replace(',', '.')),
-      usuario_id: perfilActual.id,
-      archivo: archivo.name,
+      cantidad_contada: parseFloat(String(f[claveCantidad]).replace(',', '.')),
+      categoria: claveCategoria ? normalizarTexto(f[claveCategoria]) : null,
     }))
-    .filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad));
+    .filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad_contada) && r.cantidad_contada >= 0);
 
-  if (registros.length === 0) {
-    aviso.innerHTML = '<div class="aviso error">Ninguna fila tenía código y cantidad numéricos válidos.</div>';
+  if (crudos.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">Ninguna fila tenía código y cantidad numéricos válidos (y no negativos).</div>';
     return;
   }
-  if (registros.length !== filas.length) {
-    aviso.innerHTML = `<div class="aviso info">Atención: ${filas.length - registros.length} fila(s) se descartaron por no tener código o cantidad numéricos.</div>`;
+  if (crudos.length !== filas.length) {
+    aviso.innerHTML = `<div class="aviso info">Atención: ${filas.length - crudos.length} fila(s) se descartaron por no tener código/cantidad numéricos válidos.</div>`;
   }
 
-  // Dar de alta en el catálogo los materiales que la planilla trae y
-  // todavía no existen (la planilla de stock suele cubrir más
-  // materiales de los que ya aparecieron en algún import de pedidos).
+  // Traer catálogo existente (con su factor manual, como respaldo para
+  // cuando la categoría de la fila no matchea ninguna conocida).
   const { data: existentes } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
-    .select('codigo')
+    .select('codigo, factor_conversion')
     .eq('rubro', rubro));
-  const codigosExistentes = new Set((existentes || []).map(m => m.codigo));
-  const nuevosMateriales = [...new Set(registros.map(r => r.material_codigo))]
-    .filter(c => !codigosExistentes.has(c))
-    .map(codigo => ({ codigo, rubro, nombre: `Material ${codigo} (alta por conteo de stock)` }));
+  const factorCatalogoPorCodigo = {};
+  (existentes || []).forEach(m => factorCatalogoPorCodigo[m.codigo] = Number(m.factor_conversion) || 1);
+
+  const nuevosMateriales = [...new Set(crudos.map(r => r.material_codigo))]
+    .filter(c => !(c in factorCatalogoPorCodigo))
+    .map(codigo => ({ codigo, rubro, nombre: `Material ${codigo} (alta por conteo de stock)`, factor_conversion: 1 }));
 
   if (nuevosMateriales.length > 0) {
     const { error: errNuevo } = await sb.from('materiales').upsert(nuevosMateriales, { onConflict: 'codigo,rubro' });
@@ -1085,7 +1205,31 @@ async function importarStockFisico() {
       aviso.innerHTML = `<div class="aviso error">Error dando de alta materiales nuevos: ${errNuevo.message}</div>`;
       return;
     }
+    nuevosMateriales.forEach(m => factorCatalogoPorCodigo[m.codigo] = 1);
   }
+
+  const registros = crudos.map(r => {
+    let factor = 1;
+    if (r.categoria && r.categoria in FACTORES_POR_CATEGORIA) {
+      factor = FACTORES_POR_CATEGORIA[r.categoria];
+    } else if (r.categoria) {
+      // Había categoría en la fila pero no la reconocemos — no inventamos
+      // un factor, usamos el del catálogo (o 1) y lo dejamos anotado.
+      categoriasSinMapear.add(r.categoria);
+      factor = factorCatalogoPorCodigo[r.material_codigo] ?? 1;
+    } else {
+      factor = factorCatalogoPorCodigo[r.material_codigo] ?? 1;
+    }
+    return {
+      material_codigo: r.material_codigo,
+      material_rubro: rubro,
+      cantidad_contada: r.cantidad_contada,
+      factor_aplicado: factor,
+      cantidad: r.cantidad_contada * factor,
+      usuario_id: perfilActual.id,
+      archivo: archivo.name,
+    };
+  });
 
   const { error } = await sb.from('conteos_stock').insert(registros);
   if (error) {
@@ -1094,8 +1238,15 @@ async function importarStockFisico() {
   }
 
   let mensaje = `<div class="aviso ok">Stock actualizado: ${registros.length} materiales de rubro "${rubro}" con conteo nuevo a partir de ahora.</div>`;
+  const conFactorDistinto = registros.filter(r => r.factor_aplicado !== 1).length;
+  if (conFactorDistinto > 0) {
+    mensaje += `<div class="aviso info">${conFactorDistinto} fila(s) se convirtieron con un factor distinto de 1 según la categoría de la planilla.</div>`;
+  }
+  if (categoriasSinMapear.size > 0) {
+    mensaje += `<div class="aviso error">Categorías en la columna RUBRO que no reconozco (se usó factor 1 o el del catálogo): ${[...categoriasSinMapear].join(', ')}. Si alguna de estas necesita conversión, avisame el nombre exacto y el factor para agregarla a la lista.</div>`;
+  }
   if (nuevosMateriales.length > 0) {
-    mensaje += `<div class="aviso info">${nuevosMateriales.length} de esos materiales no existían en el catálogo y se dieron de alta con nombre provisorio — cuando el import del ERP los traiga con su nombre real, se va a actualizar solo.</div>`;
+    mensaje += `<div class="aviso info">${nuevosMateriales.length} de esos materiales no existían en el catálogo y se dieron de alta con nombre provisorio y factor 1 — si necesitan conversión (como MDF o acrílico), andá a "Catálogo / factores" y cargalo antes del próximo conteo.</div>`;
   }
   aviso.innerHTML = mensaje;
   input.value = '';
