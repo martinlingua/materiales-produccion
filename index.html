@@ -492,8 +492,8 @@ async function obtenerTodasLasFilas(construirQuery, tamanoPagina = 1000) {
 }
 
 async function cargarTodo() {
-  const { data: pend, error: e1 } = await obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*'));
-  const { data: estados, error: e2 } = await obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*'));
+  const { data: pend, error: e1 } = await obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*').order('requerimiento_id'));
+  const { data: estados, error: e2 } = await obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*').order('numero'));
   if (e1 || e2) {
     console.error(e1, e2);
     return;
@@ -508,11 +508,12 @@ async function cargarTodo() {
   const { data: cerrados } = await obtenerTodasLasFilas(() => sb
     .from('requerimientos')
     .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida')
-    .eq('activo', false));
-  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada'));
+    .eq('activo', false)
+    .order('id'));
+  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada').order('numero'));
   const infoPorPedido = {};
   (pedidosInfo || []).forEach(p => infoPorPedido[p.numero] = p);
-  const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor'));
+  const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor').order('codigo'));
   const nombrePorMaterial = {};
   (matsInfo || []).forEach(m => nombrePorMaterial[m.codigo + '|' + m.rubro] = m);
 
@@ -534,7 +535,7 @@ async function cargarTodo() {
   });
 
   materialesCache = [];
-  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor'));
+  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor').order('codigo'));
   if (mats) materialesCache = mats;
 
   renderizarPedidos('herraje');
@@ -1084,7 +1085,8 @@ async function cargarCatalogo() {
   const { data, error } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
     .select('codigo, nombre, categoria, umed, unidad_conteo, factor_conversion')
-    .eq('rubro', rubro));
+    .eq('rubro', rubro)
+    .order('codigo'));
 
   if (error) {
     tbody.innerHTML = `<tr><td colspan="7">Error: ${error.message}</td></tr>`;
@@ -1258,7 +1260,8 @@ async function importarStockFisico() {
   const { data: existentes } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
     .select('codigo, factor_conversion')
-    .eq('rubro', rubro));
+    .eq('rubro', rubro)
+    .order('codigo'));
   const factorCatalogoPorCodigo = {};
   (existentes || []).forEach(m => factorCatalogoPorCodigo[m.codigo] = Number(m.factor_conversion) || 1);
 
@@ -1278,21 +1281,45 @@ async function importarStockFisico() {
   // Guardar/actualizar la categoría de cada material según la columna
   // RUBRO de la planilla, para poder editar factores por categoría
   // completa desde "Catálogo / factores" en vez de uno por uno.
-  // Se manda en tandas: un solo upsert con miles de filas puede fallar
-  // o cortarse sin avisar.
+  //
+  // Re-confirmamos qué códigos existen de verdad justo antes de este
+  // paso (con orden explícito, no confiamos en el chequeo de más
+  // arriba) y solo actualizamos categoría en esos — nunca insertamos
+  // acá, para que sea imposible pisar la restricción de nombre
+  // obligatorio de un material que en teoría ya debería existir.
   let errorCategoria = null;
+  let codigosSinConfirmar = 0;
   const categoriaPorCodigo = {};
   crudos.forEach(r => { if (r.categoria_original) categoriaPorCodigo[r.material_codigo] = r.categoria_original; });
   if (Object.keys(categoriaPorCodigo).length > 0) {
-    const filasCategoria = Object.entries(categoriaPorCodigo)
-      .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), rubro, categoria }));
-    const tamanoTanda = 300;
-    for (let i = 0; i < filasCategoria.length; i += tamanoTanda) {
-      const tanda = filasCategoria.slice(i, i + tamanoTanda);
-      const { error: errTanda } = await sb.from('materiales').upsert(tanda, { onConflict: 'codigo,rubro' });
-      if (errTanda) {
-        errorCategoria = errTanda;
-        break;
+    const { data: confirmacion, error: errConfirmacion } = await obtenerTodasLasFilas(() => sb
+      .from('materiales')
+      .select('codigo')
+      .eq('rubro', rubro)
+      .order('codigo'));
+    if (errConfirmacion) {
+      errorCategoria = errConfirmacion;
+    } else {
+      const codigosConfirmados = new Set((confirmacion || []).map(m => m.codigo));
+      const filasCategoria = Object.entries(categoriaPorCodigo)
+        .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), categoria }))
+        .filter(f => {
+          const existe = codigosConfirmados.has(f.codigo);
+          if (!existe) codigosSinConfirmar++;
+          return existe;
+        });
+
+      const tamanoTanda = 300;
+      for (let i = 0; i < filasCategoria.length && !errorCategoria; i += tamanoTanda) {
+        const tanda = filasCategoria.slice(i, i + tamanoTanda)
+          .map(f => ({ codigo: f.codigo, rubro, categoria: f.categoria }));
+        // Seguro: cada código en "tanda" ya fue confirmado como existente
+        // arriba, así que este upsert siempre toma la rama de UPDATE
+        // (ON CONFLICT) — nunca puede intentar un insert nuevo sin nombre.
+        const { error: errTanda } = await sb.from('materiales').upsert(tanda, { onConflict: 'codigo,rubro' });
+        if (errTanda) {
+          errorCategoria = errTanda;
+        }
       }
     }
   }
@@ -1333,6 +1360,9 @@ async function importarStockFisico() {
   }
   if (errorCategoria) {
     mensaje += `<div class="aviso error">Ojo: el stock se guardó bien, pero falló el guardado de categorías en el catálogo: ${errorCategoria.message}. El desplegable de "Catálogo / factores" puede aparecer vacío hasta que se resuelva esto.</div>`;
+  }
+  if (codigosSinConfirmar > 0) {
+    mensaje += `<div class="aviso info">${codigosSinConfirmar} código(s) de la planilla no se encontraron confirmados en el catálogo al momento de guardar la categoría — su stock sí se cargó bien, solo puede faltarles la categoría en "Catálogo / factores". Si pasa, probá subir la planilla una vez más.</div>`;
   }
   if (categoriasSinMapear.size > 0) {
     mensaje += `<div class="aviso error">Categorías en la columna RUBRO que no reconozco (se usó factor 1 o el del catálogo): ${[...categoriasSinMapear].join(', ')}. Si alguna de estas necesita conversión, avisame el nombre exacto y el factor para agregarla a la lista.</div>`;
