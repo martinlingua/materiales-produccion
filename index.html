@@ -373,11 +373,25 @@
             </select>
           </label>
           <label>Buscar
-            <input type="text" id="cat-busqueda" placeholder="Código o nombre..." oninput="cargarCatalogo()">
+            <input type="text" id="cat-busqueda" placeholder="Código, nombre o categoría..." oninput="cargarCatalogo()">
           </label>
         </div>
+
+        <div class="fila-form" style="background:#f7f6f3; padding:10px 12px; border-radius:6px;">
+          <label>Aplicar factor a toda una categoría
+            <select id="cat-bulk-categoria"></select>
+          </label>
+          <label>Factor
+            <input type="number" step="any" min="0" id="cat-bulk-factor" style="width:100px;">
+          </label>
+          <label>Unidad de conteo
+            <input type="text" id="cat-bulk-unidconteo" placeholder="ej: placas" style="width:100px;">
+          </label>
+          <button class="primario" onclick="aplicarFactorPorCategoria()">Aplicar a toda la categoría</button>
+        </div>
+
         <table class="pedidos"><thead>
-          <tr><th>Código</th><th>Nombre</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th></th></tr>
+          <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th></th></tr>
         </thead><tbody id="tbody-catalogo"></tbody></table>
       </div>
     </section>
@@ -527,6 +541,14 @@ async function cargarTodo() {
   renderizarPedidos('insumo');
 }
 
+function redondear2(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return n;
+  const r = Math.round(num * 100) / 100;
+  if (r % 1 === 0) return String(r);
+  return r.toFixed(2).replace(/0$/, '');
+}
+
 function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
@@ -628,8 +650,8 @@ function renderizarPorPedido(rubro) {
       <tr>
         <td>${codigo}</td>
         <td>${m.nombre}</td>
-        <td>${m.requerido}</td>
-        <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${m.pendiente}</td>
+        <td>${redondear2(m.requerido)}</td>
+        <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(m.pendiente)}</td>
         <td>${m.proveedor || ''}</td>
       </tr>
     `).join('');
@@ -733,7 +755,7 @@ function renderizarPorMaterial(rubro) {
       <td><strong>${codigo}</strong></td>
       <td>${g.nombre || ''}</td>
       <td>${g.proveedor || ''}</td>
-      <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${pendienteTotal}</td>
+      <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(pendienteTotal)}</td>
       <td>${pedidosDelMaterial.length}</td>
     `;
     tbody.appendChild(trMat);
@@ -745,8 +767,8 @@ function renderizarPorMaterial(rubro) {
           <td>${numero}</td>
           <td>${p.cliente || ''}</td>
           <td>${p.fecha_pactada || ''}</td>
-          <td>${p.requerido}</td>
-          <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${p.pendiente}</td>
+          <td>${redondear2(p.requerido)}</td>
+          <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
           <td>${esVistaCerrados ? 'Cerrado manualmente' : (p.estado === 'entregado' ? 'Entregado' : 'En producción')}</td>
         </tr>
       `).join('');
@@ -1057,25 +1079,35 @@ async function cargarCatalogo() {
   const rubro = document.getElementById('cat-rubro').value;
   const q = (document.getElementById('cat-busqueda').value || '').toLowerCase();
   const tbody = document.getElementById('tbody-catalogo');
-  tbody.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7">Cargando...</td></tr>';
 
   const { data, error } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
-    .select('codigo, nombre, umed, unidad_conteo, factor_conversion')
+    .select('codigo, nombre, categoria, umed, unidad_conteo, factor_conversion')
     .eq('rubro', rubro));
 
   if (error) {
-    tbody.innerHTML = `<tr><td colspan="6">Error: ${error.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7">Error: ${error.message}</td></tr>`;
     return;
   }
 
+  // Selector de categorías para el editor masivo
+  const seleccionCategoria = document.getElementById('cat-bulk-categoria');
+  const categoriasUnicas = [...new Set((data || []).map(m => m.categoria).filter(Boolean))].sort();
+  seleccionCategoria.innerHTML = categoriasUnicas.length
+    ? categoriasUnicas.map(c => `<option value="${c}">${c}</option>`).join('')
+    : '<option value="">(sin categorías cargadas — subí primero una planilla de stock con columna RUBRO)</option>';
+
   const filtrados = (data || [])
-    .filter(m => !q || String(m.codigo).includes(q) || (m.nombre || '').toLowerCase().includes(q))
+    .filter(m => !q
+      || String(m.codigo).includes(q)
+      || (m.nombre || '').toLowerCase().includes(q)
+      || (m.categoria || '').toLowerCase().includes(q))
     .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
 
   tbody.innerHTML = '';
   if (filtrados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
     return;
   }
 
@@ -1084,6 +1116,7 @@ async function cargarCatalogo() {
     tr.innerHTML = `
       <td>${m.codigo}</td>
       <td>${m.nombre || ''}</td>
+      <td>${m.categoria || ''}</td>
       <td>${m.umed || ''}</td>
       <td><input type="text" id="unidconteo-${rubro}-${m.codigo}" value="${m.unidad_conteo || ''}" placeholder="ej: placas" style="width:100px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
       <td><input type="number" step="any" min="0" id="factor-${rubro}-${m.codigo}" value="${m.factor_conversion}" style="width:90px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
@@ -1091,6 +1124,39 @@ async function cargarCatalogo() {
     `;
     tbody.appendChild(tr);
   });
+}
+
+async function aplicarFactorPorCategoria() {
+  const rubro = document.getElementById('cat-rubro').value;
+  const categoria = document.getElementById('cat-bulk-categoria').value;
+  const factor_conversion = parseFloat(document.getElementById('cat-bulk-factor').value);
+  const unidad_conteo = document.getElementById('cat-bulk-unidconteo').value.trim() || null;
+
+  if (!categoria) {
+    alert('Elegí una categoría (necesitás haber subido antes una planilla de stock con columna RUBRO para que existan categorías).');
+    return;
+  }
+  if (!Number.isFinite(factor_conversion) || factor_conversion <= 0) {
+    alert('El factor tiene que ser un número mayor a 0.');
+    return;
+  }
+  if (!confirm(`¿Aplicar factor ${factor_conversion} a TODOS los materiales de la categoría "${categoria}" (rubro ${rubro})?`)) return;
+
+  const payload = { factor_conversion };
+  if (unidad_conteo) payload.unidad_conteo = unidad_conteo;
+
+  const { error, count } = await sb
+    .from('materiales')
+    .update(payload)
+    .eq('rubro', rubro)
+    .eq('categoria', categoria);
+
+  if (error) {
+    alert('No se pudo aplicar: ' + error.message);
+    return;
+  }
+  alert(`Factor ${factor_conversion} aplicado a la categoría "${categoria}".`);
+  await cargarCatalogo();
 }
 
 async function guardarFactor(codigo, rubro) {
@@ -1175,6 +1241,7 @@ async function importarStockFisico() {
       material_codigo: parseInt(f[claveCodigo]),
       cantidad_contada: parseFloat(String(f[claveCantidad]).replace(',', '.')),
       categoria: claveCategoria ? normalizarTexto(f[claveCategoria]) : null,
+      categoria_original: claveCategoria ? String(f[claveCategoria]).trim() : null,
     }))
     .filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad_contada) && r.cantidad_contada >= 0);
 
@@ -1206,6 +1273,17 @@ async function importarStockFisico() {
       return;
     }
     nuevosMateriales.forEach(m => factorCatalogoPorCodigo[m.codigo] = 1);
+  }
+
+  // Guardar/actualizar la categoría de cada material según la columna
+  // RUBRO de la planilla, para poder editar factores por categoría
+  // completa desde "Catálogo / factores" en vez de uno por uno.
+  const categoriaPorCodigo = {};
+  crudos.forEach(r => { if (r.categoria_original) categoriaPorCodigo[r.material_codigo] = r.categoria_original; });
+  if (Object.keys(categoriaPorCodigo).length > 0) {
+    const filasCategoria = Object.entries(categoriaPorCodigo)
+      .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), rubro, categoria }));
+    await sb.from('materiales').upsert(filasCategoria, { onConflict: 'codigo,rubro' });
   }
 
   const registros = crudos.map(r => {
