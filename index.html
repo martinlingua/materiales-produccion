@@ -1278,12 +1278,23 @@ async function importarStockFisico() {
   // Guardar/actualizar la categoría de cada material según la columna
   // RUBRO de la planilla, para poder editar factores por categoría
   // completa desde "Catálogo / factores" en vez de uno por uno.
+  // Se manda en tandas: un solo upsert con miles de filas puede fallar
+  // o cortarse sin avisar.
+  let errorCategoria = null;
   const categoriaPorCodigo = {};
   crudos.forEach(r => { if (r.categoria_original) categoriaPorCodigo[r.material_codigo] = r.categoria_original; });
   if (Object.keys(categoriaPorCodigo).length > 0) {
     const filasCategoria = Object.entries(categoriaPorCodigo)
       .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), rubro, categoria }));
-    await sb.from('materiales').upsert(filasCategoria, { onConflict: 'codigo,rubro' });
+    const tamanoTanda = 300;
+    for (let i = 0; i < filasCategoria.length; i += tamanoTanda) {
+      const tanda = filasCategoria.slice(i, i + tamanoTanda);
+      const { error: errTanda } = await sb.from('materiales').upsert(tanda, { onConflict: 'codigo,rubro' });
+      if (errTanda) {
+        errorCategoria = errTanda;
+        break;
+      }
+    }
   }
 
   const registros = crudos.map(r => {
@@ -1319,6 +1330,9 @@ async function importarStockFisico() {
   const conFactorDistinto = registros.filter(r => r.factor_aplicado !== 1).length;
   if (conFactorDistinto > 0) {
     mensaje += `<div class="aviso info">${conFactorDistinto} fila(s) se convirtieron con un factor distinto de 1 según la categoría de la planilla.</div>`;
+  }
+  if (errorCategoria) {
+    mensaje += `<div class="aviso error">Ojo: el stock se guardó bien, pero falló el guardado de categorías en el catálogo: ${errorCategoria.message}. El desplegable de "Catálogo / factores" puede aparecer vacío hasta que se resuelva esto.</div>`;
   }
   if (categoriasSinMapear.size > 0) {
     mensaje += `<div class="aviso error">Categorías en la columna RUBRO que no reconozco (se usó factor 1 o el del catálogo): ${[...categoriasSinMapear].join(', ')}. Si alguna de estas necesita conversión, avisame el nombre exacto y el factor para agregarla a la lista.</div>`;
