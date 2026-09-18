@@ -667,8 +667,9 @@ function renderizarPorPedido(rubro) {
           const yaPriorizado = materiales.every(m => m.prioridad_manual);
           return `
             <button class="primario" style="margin-top:8px; margin-right:6px; font-size:12px; padding:5px 10px;"
-                    onclick="event.stopPropagation(); priorizarPedido(${numero}, '${rubro}', ${yaPriorizado})">
-              ${yaPriorizado ? 'Quitar prioridad' : 'Priorizar este pedido'}
+                    onclick="event.stopPropagation(); priorizarPedido(${numero}, '${rubro}', ${yaPriorizado})"
+                    title="Prioriza el pedido en herrajes e insumos a la vez">
+              ${yaPriorizado ? 'Quitar prioridad' : 'Priorizar pedido (herrajes + insumos)'}
             </button>
             <button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px; background:var(--gris-claro);"
                     onclick="event.stopPropagation(); marcarEntregadoManual(${numero}, '${rubro}')">
@@ -848,6 +849,9 @@ async function reabrirPedido(numero, rubro) {
 // ---------------------------------------------------------------------
 async function priorizarPedido(numero, rubro, quitar) {
   const nuevoValor = !quitar;
+  // Sin filtro por rubro a propósito: priorizar un pedido lo prioriza
+  // en TODOS sus rubros (herrajes e insumos), no solo en el que estás
+  // mirando — así no hace falta repetir la acción en la otra pestaña.
   const { error } = await sb
     .from('requerimientos')
     .update({
@@ -855,7 +859,6 @@ async function priorizarPedido(numero, rubro, quitar) {
       prioridad_marcada_en: nuevoValor ? new Date().toISOString() : null,
     })
     .eq('pedido_numero', numero)
-    .eq('material_rubro', rubro)
     .eq('activo', true);
 
   if (error) {
