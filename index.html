@@ -281,7 +281,7 @@
         <h2>Cargar recepción de material</h2>
         <div class="fila-form">
           <label>Rubro
-            <select id="rec-rubro">
+            <select id="rec-rubro" onchange="actualizarUnidadRecepcion()">
               <option value="herraje">Herraje</option>
               <option value="insumo">Insumo</option>
             </select>
@@ -289,8 +289,8 @@
           <label>Material
             <input type="text" id="rec-material-busqueda" placeholder="Código o nombre..." oninput="buscarMateriales()">
           </label>
-          <label>Cantidad
-            <input type="number" id="rec-cantidad" min="0" step="0.01">
+          <label id="rec-cantidad-label">Cantidad
+            <input type="number" id="rec-cantidad" min="0" step="0.01" oninput="actualizarPreviaConversion()">
           </label>
           <label>Pedido puntual (opcional)
             <input type="number" id="rec-pedido" placeholder="Dejar vacío = stock general">
@@ -298,6 +298,7 @@
           <button class="primario" onclick="cargarRecepcion()">Registrar recepción</button>
         </div>
         <div id="rec-sugerencias" style="font-size:12px; color:var(--gris-claro); max-height:120px; overflow:auto;"></div>
+        <div id="rec-previa" style="font-size:13px; color:var(--gris-oscuro); font-weight:500;"></div>
         <div id="rec-aviso"></div>
       </div>
     </section>
@@ -535,7 +536,7 @@ async function cargarTodo() {
   });
 
   materialesCache = [];
-  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor').order('codigo'));
+  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo'));
   if (mats) materialesCache = mats;
 
   renderizarPedidos('herraje');
@@ -877,17 +878,46 @@ function buscarMateriales() {
     .filter(m => String(m.codigo).includes(q) || (m.nombre || '').toLowerCase().includes(q))
     .slice(0, 8);
   cont.innerHTML = coincidencias.map(m =>
-    `<div style="cursor:pointer; padding:3px 0;" onclick="seleccionarMaterial(${m.codigo}, '${m.rubro}', '${(m.nombre || '').replace(/'/g, "")}')">
+    `<div style="cursor:pointer; padding:3px 0;" onclick='seleccionarMaterial(${JSON.stringify(m).replace(/'/g, "&#39;")})'>
       ${m.codigo} — ${m.nombre} (${m.proveedor || 'sin proveedor'})
     </div>`
   ).join('') || '<div>Sin coincidencias</div>';
 }
 
 let materialSeleccionado = null;
-function seleccionarMaterial(codigo, rubro, nombre) {
-  materialSeleccionado = { codigo, rubro };
-  document.getElementById('rec-material-busqueda').value = `${codigo} — ${nombre}`;
+function seleccionarMaterial(material) {
+  materialSeleccionado = material;
+  document.getElementById('rec-material-busqueda').value = `${material.codigo} — ${material.nombre}`;
   document.getElementById('rec-sugerencias').innerHTML = '';
+  actualizarUnidadRecepcion();
+}
+
+function actualizarUnidadRecepcion() {
+  const label = document.getElementById('rec-cantidad-label');
+  if (materialSeleccionado && materialSeleccionado.unidad_conteo && Number(materialSeleccionado.factor_conversion) !== 1) {
+    label.innerHTML = `Cantidad (en <strong>${materialSeleccionado.unidad_conteo}</strong>)
+      <input type="number" id="rec-cantidad" min="0" step="0.01" oninput="actualizarPreviaConversion()">`;
+  } else {
+    label.innerHTML = `Cantidad${materialSeleccionado && materialSeleccionado.umed ? ` (en ${materialSeleccionado.umed})` : ''}
+      <input type="number" id="rec-cantidad" min="0" step="0.01" oninput="actualizarPreviaConversion()">`;
+  }
+  actualizarPreviaConversion();
+}
+
+function actualizarPreviaConversion() {
+  const previa = document.getElementById('rec-previa');
+  const input = document.getElementById('rec-cantidad');
+  const cantidad = parseFloat(input.value);
+  if (!materialSeleccionado || !Number.isFinite(cantidad) || cantidad <= 0) {
+    previa.textContent = '';
+    return;
+  }
+  const factor = Number(materialSeleccionado.factor_conversion) || 1;
+  if (factor !== 1) {
+    previa.textContent = `= ${redondear2(cantidad * factor)} ${materialSeleccionado.umed || ''}`;
+  } else {
+    previa.textContent = '';
+  }
 }
 
 async function cargarRecepcion() {
@@ -897,18 +927,22 @@ async function cargarRecepcion() {
     aviso.innerHTML = '<div class="aviso error">Elegí un material de la lista de sugerencias.</div>';
     return;
   }
-  const cantidad = parseFloat(document.getElementById('rec-cantidad').value);
-  if (!cantidad || cantidad <= 0) {
+  const cantidadContada = parseFloat(document.getElementById('rec-cantidad').value);
+  if (!cantidadContada || cantidadContada <= 0) {
     aviso.innerHTML = '<div class="aviso error">Ingresá una cantidad mayor a 0.</div>';
     return;
   }
   const pedidoTxt = document.getElementById('rec-pedido').value.trim();
   const pedido_numero = pedidoTxt ? parseInt(pedidoTxt) : null;
+  const factor = Number(materialSeleccionado.factor_conversion) || 1;
+  const cantidad = cantidadContada * factor;
 
   const { error } = await sb.from('recepciones').insert({
     material_codigo: materialSeleccionado.codigo,
     material_rubro: materialSeleccionado.rubro,
     cantidad,
+    cantidad_contada: cantidadContada,
+    factor_aplicado: factor,
     pedido_numero,
     usuario_id: perfilActual.id,
   });
@@ -917,10 +951,13 @@ async function cargarRecepcion() {
     aviso.innerHTML = `<div class="aviso error">No se pudo registrar: ${error.message}</div>`;
     return;
   }
-  aviso.innerHTML = '<div class="aviso ok">Recepción registrada.</div>';
+  aviso.innerHTML = factor !== 1
+    ? `<div class="aviso ok">Recepción registrada: ${cantidadContada} ${materialSeleccionado.unidad_conteo || ''} = ${redondear2(cantidad)} ${materialSeleccionado.umed || ''}.</div>`
+    : '<div class="aviso ok">Recepción registrada.</div>';
   document.getElementById('rec-cantidad').value = '';
   document.getElementById('rec-pedido').value = '';
   document.getElementById('rec-material-busqueda').value = '';
+  document.getElementById('rec-previa').textContent = '';
   materialSeleccionado = null;
   await cargarTodo();
 }
