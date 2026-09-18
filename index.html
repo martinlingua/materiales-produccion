@@ -1282,46 +1282,21 @@ async function importarStockFisico() {
   // RUBRO de la planilla, para poder editar factores por categoría
   // completa desde "Catálogo / factores" en vez de uno por uno.
   //
-  // Re-confirmamos qué códigos existen de verdad justo antes de este
-  // paso (con orden explícito, no confiamos en el chequeo de más
-  // arriba) y solo actualizamos categoría en esos — nunca insertamos
-  // acá, para que sea imposible pisar la restricción de nombre
-  // obligatorio de un material que en teoría ya debería existir.
+  // Usa la función actualizar_categorias_masivo (UPDATE real, no
+  // upsert) — con upsert, Postgres igual arma la fila de inserción
+  // para detectar el conflicto y exige la columna "nombre" aunque el
+  // conflicto sea seguro. Un UPDATE evita ese problema.
   let errorCategoria = null;
-  let codigosSinConfirmar = 0;
   const categoriaPorCodigo = {};
   crudos.forEach(r => { if (r.categoria_original) categoriaPorCodigo[r.material_codigo] = r.categoria_original; });
   if (Object.keys(categoriaPorCodigo).length > 0) {
-    const { data: confirmacion, error: errConfirmacion } = await obtenerTodasLasFilas(() => sb
-      .from('materiales')
-      .select('codigo')
-      .eq('rubro', rubro)
-      .order('codigo'));
-    if (errConfirmacion) {
-      errorCategoria = errConfirmacion;
-    } else {
-      const codigosConfirmados = new Set((confirmacion || []).map(m => m.codigo));
-      const filasCategoria = Object.entries(categoriaPorCodigo)
-        .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), categoria }))
-        .filter(f => {
-          const existe = codigosConfirmados.has(f.codigo);
-          if (!existe) codigosSinConfirmar++;
-          return existe;
-        });
-
-      const tamanoTanda = 300;
-      for (let i = 0; i < filasCategoria.length && !errorCategoria; i += tamanoTanda) {
-        const tanda = filasCategoria.slice(i, i + tamanoTanda)
-          .map(f => ({ codigo: f.codigo, rubro, categoria: f.categoria }));
-        // Seguro: cada código en "tanda" ya fue confirmado como existente
-        // arriba, así que este upsert siempre toma la rama de UPDATE
-        // (ON CONFLICT) — nunca puede intentar un insert nuevo sin nombre.
-        const { error: errTanda } = await sb.from('materiales').upsert(tanda, { onConflict: 'codigo,rubro' });
-        if (errTanda) {
-          errorCategoria = errTanda;
-        }
-      }
-    }
+    const pares = Object.entries(categoriaPorCodigo)
+      .map(([codigo, categoria]) => ({ codigo: parseInt(codigo), categoria }));
+    const { error: errRpc } = await sb.rpc('actualizar_categorias_masivo', {
+      p_rubro: rubro,
+      p_pares: pares,
+    });
+    if (errRpc) errorCategoria = errRpc;
   }
 
   const registros = crudos.map(r => {
@@ -1360,9 +1335,6 @@ async function importarStockFisico() {
   }
   if (errorCategoria) {
     mensaje += `<div class="aviso error">Ojo: el stock se guardó bien, pero falló el guardado de categorías en el catálogo: ${errorCategoria.message}. El desplegable de "Catálogo / factores" puede aparecer vacío hasta que se resuelva esto.</div>`;
-  }
-  if (codigosSinConfirmar > 0) {
-    mensaje += `<div class="aviso info">${codigosSinConfirmar} código(s) de la planilla no se encontraron confirmados en el catálogo al momento de guardar la categoría — su stock sí se cargó bien, solo puede faltarles la categoría en "Catálogo / factores". Si pasa, probá subir la planilla una vez más.</div>`;
   }
   if (categoriasSinMapear.size > 0) {
     mensaje += `<div class="aviso error">Categorías en la columna RUBRO que no reconozco (se usó factor 1 o el del catálogo): ${[...categoriasSinMapear].join(', ')}. Si alguna de estas necesita conversión, avisame el nombre exacto y el factor para agregarla a la lista.</div>`;
