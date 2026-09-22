@@ -392,7 +392,7 @@
         </div>
 
         <table class="pedidos"><thead>
-          <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th></th></tr>
+          <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th>No requiere compra</th><th></th></tr>
         </thead><tbody id="tbody-catalogo"></tbody></table>
       </div>
     </section>
@@ -1124,12 +1124,12 @@ async function cargarCatalogo() {
 
   const { data, error } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
-    .select('codigo, nombre, categoria, umed, unidad_conteo, factor_conversion')
+    .select('codigo, nombre, categoria, umed, unidad_conteo, factor_conversion, excluir_de_pendientes')
     .eq('rubro', rubro)
     .order('codigo'));
 
   if (error) {
-    tbody.innerHTML = `<tr><td colspan="7">Error: ${error.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8">Error: ${error.message}</td></tr>`;
     return;
   }
 
@@ -1149,7 +1149,7 @@ async function cargarCatalogo() {
 
   tbody.innerHTML = '';
   if (filtrados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
     return;
   }
 
@@ -1157,11 +1157,15 @@ async function cargarCatalogo() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${m.codigo}</td>
-      <td>${m.nombre || ''}</td>
+      <td>${m.nombre || ''}${m.excluir_de_pendientes ? ' <span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">no requiere compra</span>' : ''}</td>
       <td>${m.categoria || ''}</td>
       <td>${m.umed || ''}</td>
       <td><input type="text" id="unidconteo-${rubro}-${m.codigo}" value="${m.unidad_conteo || ''}" placeholder="ej: placas" style="width:100px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
       <td><input type="number" step="any" min="0" id="factor-${rubro}-${m.codigo}" value="${m.factor_conversion}" style="width:90px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
+      <td style="text-align:center;">
+        <input type="checkbox" id="fantasma-${rubro}-${m.codigo}" ${m.excluir_de_pendientes ? 'checked' : ''}
+               title="No requiere compra: nunca va a figurar como faltante, sin importar el stock (ej: mano de obra)">
+      </td>
       <td><button class="primario" style="font-size:12px; padding:4px 10px;" onclick="guardarFactor(${m.codigo}, '${rubro}')">Guardar</button></td>
     `;
     tbody.appendChild(tr);
@@ -1205,20 +1209,22 @@ async function guardarFactor(codigo, rubro) {
   const unidad_conteo = document.getElementById(`unidconteo-${rubro}-${codigo}`).value.trim() || null;
   const factorTxt = document.getElementById(`factor-${rubro}-${codigo}`).value;
   const factor_conversion = parseFloat(factorTxt);
+  const excluir_de_pendientes = document.getElementById(`fantasma-${rubro}-${codigo}`).checked;
   if (!Number.isFinite(factor_conversion) || factor_conversion <= 0) {
-    alert('El factor tiene que ser un número mayor a 0.');
+    alert('El factor tiene que ser un número mayor a 0. Para materiales que no requieren compra (ej: mano de obra), dejá el factor en 1 y tildá "no requiere compra" en vez de poner 0.');
     return;
   }
   const { error } = await sb
     .from('materiales')
-    .update({ unidad_conteo, factor_conversion })
+    .update({ unidad_conteo, factor_conversion, excluir_de_pendientes })
     .eq('codigo', codigo)
     .eq('rubro', rubro);
   if (error) {
     alert('No se pudo guardar: ' + error.message);
     return;
   }
-  alert(`Guardado: ${codigo} — factor ${factor_conversion}${unidad_conteo ? ' (' + unidad_conteo + ')' : ''}.`);
+  alert(`Guardado: ${codigo} — factor ${factor_conversion}${unidad_conteo ? ' (' + unidad_conteo + ')' : ''}${excluir_de_pendientes ? ' — marcado como "no requiere compra"' : ''}.`);
+  await cargarCatalogo();
 }
 
 // ---------------------------------------------------------------------
