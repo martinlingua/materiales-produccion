@@ -392,7 +392,7 @@
         </div>
 
         <table class="pedidos"><thead>
-          <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad de pedido</th><th>Unidad de conteo</th><th>Factor</th><th>No requiere compra</th><th></th></tr>
+          <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Unidad de pedido</th><th>Último conteo</th><th>Unidad de conteo</th><th>Factor</th><th>No requiere compra</th><th></th></tr>
         </thead><tbody id="tbody-catalogo"></tbody></table>
       </div>
     </section>
@@ -1124,7 +1124,7 @@ async function cargarCatalogo() {
   const rubro = document.getElementById('cat-rubro').value;
   const q = (document.getElementById('cat-busqueda').value || '').toLowerCase();
   const tbody = document.getElementById('tbody-catalogo');
-  tbody.innerHTML = '<tr><td colspan="7">Cargando...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9">Cargando...</td></tr>';
 
   const { data, error } = await obtenerTodasLasFilas(() => sb
     .from('materiales')
@@ -1133,9 +1133,17 @@ async function cargarCatalogo() {
     .order('codigo'));
 
   if (error) {
-    tbody.innerHTML = `<tr><td colspan="8">Error: ${error.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9">Error: ${error.message}</td></tr>`;
     return;
   }
+
+  const { data: conteos } = await obtenerTodasLasFilas(() => sb
+    .from('v_ultimo_conteo')
+    .select('material_codigo, cantidad, cantidad_contada, fecha')
+    .eq('material_rubro', rubro)
+    .order('material_codigo'));
+  const conteoPorCodigo = {};
+  (conteos || []).forEach(c => conteoPorCodigo[c.material_codigo] = c);
 
   // Selector de categorías para el editor masivo
   const seleccionCategoria = document.getElementById('cat-bulk-categoria');
@@ -1153,17 +1161,23 @@ async function cargarCatalogo() {
 
   tbody.innerHTML = '';
   if (filtrados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
     return;
   }
 
   filtrados.forEach(m => {
+    const conteo = conteoPorCodigo[m.codigo];
+    const stockTexto = conteo
+      ? `${redondear2(conteo.cantidad_contada)} ${m.unidad_conteo || ''} = ${redondear2(conteo.cantidad)} ${m.umed || ''}<br>
+         <span style="font-size:11px; color:var(--gris-claro);">${new Date(conteo.fecha).toLocaleDateString('es-AR')}</span>`
+      : '<span style="color:var(--gris-claro);">sin conteo</span>';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${m.codigo}</td>
       <td>${m.nombre || ''}${m.excluir_de_pendientes ? ' <span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">no requiere compra</span>' : ''}</td>
       <td>${m.categoria || ''}</td>
       <td>${m.umed || ''}</td>
+      <td style="font-size:12px;">${stockTexto}</td>
       <td><input type="text" id="unidconteo-${rubro}-${m.codigo}" value="${m.unidad_conteo || ''}" placeholder="ej: placas" style="width:100px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
       <td><input type="number" step="any" min="0" id="factor-${rubro}-${m.codigo}" value="${m.factor_conversion}" style="width:90px; padding:4px 6px; border:1px solid #d8d5cc; border-radius:4px;"></td>
       <td style="text-align:center;">
@@ -1350,6 +1364,33 @@ async function importarStockFisico() {
   const nuevosMateriales = [...new Set(crudos.map(r => r.material_codigo))]
     .filter(c => !(c in factorCatalogoPorCodigo))
     .map(codigo => ({ codigo, rubro, nombre: `Material ${codigo} (alta por conteo de stock)`, factor_conversion: 1 }));
+
+  // Aviso de seguridad: si buena parte de los "materiales nuevos" en
+  // realidad ya existen en el OTRO rubro, es probable que se haya
+  // elegido mal el rubro de la planilla (ej: subir herrajes con
+  // "Insumo" seleccionado). Se pregunta antes de dar de alta nada.
+  if (nuevosMateriales.length > 0) {
+    const otroRubro = rubro === 'herraje' ? 'insumo' : 'herraje';
+    const { data: enOtroRubro } = await obtenerTodasLasFilas(() => sb
+      .from('materiales')
+      .select('codigo')
+      .eq('rubro', otroRubro)
+      .order('codigo'));
+    const codigosOtroRubro = new Set((enOtroRubro || []).map(m => m.codigo));
+    const coincidenOtroRubro = nuevosMateriales.filter(m => codigosOtroRubro.has(m.codigo)).length;
+    const proporcion = coincidenOtroRubro / nuevosMateriales.length;
+    if (nuevosMateriales.length >= 5 && proporcion >= 0.4) {
+      const seguro = confirm(
+        `Ojo: ${coincidenOtroRubro} de ${nuevosMateriales.length} códigos "nuevos" de esta planilla ya existen ` +
+        `en el catálogo de "${otroRubro}", no en "${rubro}". Esto suele pasar cuando se sube el archivo con el ` +
+        `rubro equivocado seleccionado.\n\n¿Seguro que esta planilla es de "${rubro}"? Aceptar = continuar igual. Cancelar = frenar sin guardar nada.`
+      );
+      if (!seguro) {
+        aviso.innerHTML = '<div class="aviso info">Import cancelado — no se guardó nada.</div>';
+        return;
+      }
+    }
+  }
 
   if (nuevosMateriales.length > 0) {
     const { error: errNuevo } = await sb.from('materiales').upsert(nuevosMateriales, { onConflict: 'codigo,rubro' });
