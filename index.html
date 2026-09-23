@@ -332,13 +332,13 @@
       <div class="panel">
         <h2>Actualizar stock físico</h2>
         <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
-          Subí una planilla con el stock real contado en fábrica, en la unidad en que lo contás
-          (ej: placas, rollos). Columnas esperadas: <strong>codigo</strong> y <strong>cantidad</strong>
-          (los nombres de columna no distinguen mayúsculas). Si el material tiene un factor de
-          conversión cargado en "Catálogo / factores", la cantidad se convierte sola a la unidad en
-          que se piden los materiales (ej: placas → m²) antes de compararla contra lo pendiente.
-          Cada carga reemplaza, para adelante, el cálculo de disponible de esos materiales — no se
-          suma a conteos anteriores.
+          Subí el balance de stock tal como lo exporta el sistema (columnas <strong>ID</strong>,
+          <strong>Cant</strong>, <strong>Rubro</strong>) o una planilla propia con <strong>codigo</strong>
+          y <strong>cantidad</strong> — el sistema detecta cuál es. Si el material tiene un factor de
+          conversión cargado en "Catálogo / factores" (por categoría o individual), la cantidad se
+          convierte sola a la unidad en que se piden los materiales (ej: placas → m²) antes de
+          compararla contra lo pendiente. Cada carga reemplaza, para adelante, el cálculo de
+          disponible de esos materiales — no se suma a conteos anteriores.
         </p>
         <div class="fila-form">
           <label>Rubro de la planilla
@@ -1266,43 +1266,75 @@ async function importarStockFisico() {
     return;
   }
   const archivo = input.files[0];
-  const buffer = await archivo.arrayBuffer();
-  const libro = XLSX.read(buffer, { type: 'array' });
-  const hoja = libro.Sheets[libro.SheetNames[0]];
-  const filas = XLSX.utils.sheet_to_json(hoja, { defval: '' });
+
+  // El export del sistema (QY_BALANCES) es HTML disfrazado de .xls, igual
+  // que los de "Importar del sistema" — lo distinguimos leyendo el
+  // arranque del archivo como texto. Si no es HTML, se asume Excel/CSV
+  // real y se lee con SheetJS como antes.
+  const textoCrudo = await archivo.text();
+  const esHTML = /<html|<table|<form/i.test(textoCrudo.slice(0, 2000));
+
+  let filas;
+  if (esHTML) {
+    let registrosHTML;
+    try {
+      registrosHTML = leerTablaHTML(textoCrudo);
+    } catch (e) {
+      aviso.innerHTML = `<div class="aviso error">No se pudo leer el archivo como tabla: ${e.message}</div>`;
+      return;
+    }
+    filas = registrosHTML;
+  } else {
+    const buffer = await archivo.arrayBuffer();
+    const libro = XLSX.read(buffer, { type: 'array' });
+    const hoja = libro.Sheets[libro.SheetNames[0]];
+    filas = XLSX.utils.sheet_to_json(hoja, { defval: '' });
+  }
 
   if (filas.length === 0) {
     aviso.innerHTML = '<div class="aviso error">La planilla no tiene filas de datos, o no se pudo leer la primera hoja.</div>';
     return;
   }
 
-  // Detectar columnas código/cantidad/rubro sin importar mayúsculas ni acentos
+  // Detectar columnas código/cantidad/rubro sin importar mayúsculas ni
+  // acentos. Acepta tanto "codigo"/"cantidad" (planilla manual) como
+  // "ID"/"Cant" (export QY_BALANCES del sistema).
   const claves = Object.keys(filas[0]);
-  const claveCodigo = claves.find(k => k.trim().toLowerCase().startsWith('codigo') || k.trim().toLowerCase().startsWith('código'));
-  const claveCantidad = claves.find(k => k.trim().toLowerCase().startsWith('cantidad'));
+  const claveCodigo = claves.find(k => {
+    const t = k.trim().toLowerCase();
+    return t === 'id' || t.startsWith('codigo') || t.startsWith('código');
+  });
+  const claveCantidad = claves.find(k => {
+    const t = k.trim().toLowerCase();
+    return t === 'cant' || t.startsWith('cantidad');
+  });
   const claveCategoria = claves.find(k => k.trim().toLowerCase() === 'rubro');
   if (!claveCodigo || !claveCantidad) {
-    aviso.innerHTML = `<div class="aviso error">No encontré columnas "codigo" y "cantidad" en la planilla. Columnas detectadas: ${claves.join(', ')}</div>`;
+    aviso.innerHTML = `<div class="aviso error">No encontré columnas de código y cantidad en la planilla. Columnas detectadas: ${claves.join(', ')}</div>`;
     return;
   }
 
   const categoriasSinMapear = new Set();
 
-  const crudos = filas
-    .map(f => ({
-      material_codigo: parseInt(f[claveCodigo]),
-      cantidad_contada: parseFloat(String(f[claveCantidad]).replace(',', '.')),
-      categoria: claveCategoria ? normalizarTexto(f[claveCategoria]) : null,
-      categoria_original: claveCategoria ? String(f[claveCategoria]).trim() : null,
-    }))
-    .filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad_contada) && r.cantidad_contada >= 0);
+  const previos = filas.map(f => ({
+    material_codigo: parseInt(f[claveCodigo]),
+    cantidad_contada: parseFloat(String(f[claveCantidad]).replace(',', '.')),
+    categoria: claveCategoria ? normalizarTexto(f[claveCategoria]) : null,
+    categoria_original: claveCategoria ? String(f[claveCategoria]).trim() : null,
+  }));
+  const negativos = previos.filter(r => Number.isFinite(r.cantidad_contada) && r.cantidad_contada < 0).length;
+  const invalidos = previos.filter(r => !Number.isFinite(r.material_codigo) || !Number.isFinite(r.cantidad_contada)).length;
+  const crudos = previos.filter(r => Number.isFinite(r.material_codigo) && Number.isFinite(r.cantidad_contada) && r.cantidad_contada >= 0);
 
   if (crudos.length === 0) {
     aviso.innerHTML = '<div class="aviso error">Ninguna fila tenía código y cantidad numéricos válidos (y no negativos).</div>';
     return;
   }
-  if (crudos.length !== filas.length) {
-    aviso.innerHTML = `<div class="aviso info">Atención: ${filas.length - crudos.length} fila(s) se descartaron por no tener código/cantidad numéricos válidos.</div>`;
+  if (negativos > 0 || invalidos > 0) {
+    const partes = [];
+    if (negativos > 0) partes.push(`${negativos} con cantidad negativa (ignoradas)`);
+    if (invalidos > 0) partes.push(`${invalidos} con código o cantidad no numéricos (ignoradas)`);
+    aviso.innerHTML = `<div class="aviso info">Atención: ${partes.join(', ')}.</div>`;
   }
 
   // Traer catálogo existente (con su factor manual, como respaldo para
