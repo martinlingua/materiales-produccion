@@ -599,6 +599,27 @@ function renderizarPorPedido(rubro) {
     if (!esVistaCerrados && filtroEstado !== 'todos' && estado.estado !== filtroEstado) return;
     if (!esVistaCerrados && ocultarCubierto && estado.estado === 'entregado') return;
 
+    // Agrupar por material (el mismo material puede pedirse en varias
+    // estructuras/piezas del pedido — varias líneas de "rgln") ANTES de
+    // armar el encabezado, para poder mostrar el conteo real de ESTA
+    // pestaña — no el combinado herrajes+insumos que usa v_estado_pedidos
+    // para decidir si el pedido está entregado.
+    const porMaterial = {};
+    materiales.forEach(m => {
+      if (!porMaterial[m.material_codigo]) {
+        porMaterial[m.material_codigo] = {
+          nombre: m.material_nombre,
+          proveedor: m.proveedor,
+          requerido: 0,
+          pendiente: 0,
+        };
+      }
+      porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
+      porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
+    });
+    const totalesTab = Object.values(porMaterial);
+    const pendientesTab = totalesTab.filter(m => m.pendiente > 0).length;
+
     const trPedido = document.createElement('tr');
     trPedido.className = 'fila-pedido';
     trPedido.onclick = () => {
@@ -613,7 +634,7 @@ function renderizarPorPedido(rubro) {
         <button style="border:none;background:none;cursor:pointer;color:var(--gris-claro);font-size:11px;"
                 onclick="event.stopPropagation(); editarFecha(${numero}, '${rubro}', '${fecha}')">✎</button>
       </td>
-      <td>${esVistaCerrados ? '—' : estado.materiales_pendientes + ' de ' + estado.materiales_totales}</td>
+      <td>${esVistaCerrados ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
         ${esVistaCerrados
           ? '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>'
@@ -628,23 +649,6 @@ function renderizarPorPedido(rubro) {
     trDetalle.className = 'detalle';
     trDetalle.id = 'det-' + rubro + '-' + numero;
     trDetalle.style.display = 'none';
-
-    // Agrupar por material: el mismo material puede pedirse en varias
-    // estructuras/piezas del pedido (varias líneas de "rgln") — acá
-    // se suman para mostrar un solo renglón por material.
-    const porMaterial = {};
-    materiales.forEach(m => {
-      if (!porMaterial[m.material_codigo]) {
-        porMaterial[m.material_codigo] = {
-          nombre: m.material_nombre,
-          proveedor: m.proveedor,
-          requerido: 0,
-          pendiente: 0,
-        };
-      }
-      porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
-      porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
-    });
 
     const filasMat = Object.entries(porMaterial)
       .filter(([, m]) => !ocultarCubierto || m.pendiente > 0)
