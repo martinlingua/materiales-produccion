@@ -246,6 +246,13 @@
           <input type="checkbox" id="ocultar-cubierto-herraje" onchange="renderizarPedidos('herraje')">
           Ocultar lo ya cubierto
         </label>
+        <select id="filtro-campo-fecha-herraje" onchange="renderizarPedidos('herraje')" title="Qué fecha usar para el rango de abajo">
+          <option value="fecha_pactada">F. pactada</option>
+          <option value="fecha_ingreso">F. ingreso</option>
+          <option value="fecha_salida">F. salida</option>
+        </select>
+        <input type="date" id="filtro-fecha-desde-herraje" onchange="renderizarPedidos('herraje')" title="Desde">
+        <input type="date" id="filtro-fecha-hasta-herraje" onchange="renderizarPedidos('herraje')" title="Hasta">
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('herraje')">
           Pedidos de la semana
         </button>
@@ -272,6 +279,13 @@
           <input type="checkbox" id="ocultar-cubierto-insumo" onchange="renderizarPedidos('insumo')">
           Ocultar lo ya cubierto
         </label>
+        <select id="filtro-campo-fecha-insumo" onchange="renderizarPedidos('insumo')" title="Qué fecha usar para el rango de abajo">
+          <option value="fecha_pactada">F. pactada</option>
+          <option value="fecha_ingreso">F. ingreso</option>
+          <option value="fecha_salida">F. salida</option>
+        </select>
+        <input type="date" id="filtro-fecha-desde-insumo" onchange="renderizarPedidos('insumo')" title="Desde">
+        <input type="date" id="filtro-fecha-hasta-insumo" onchange="renderizarPedidos('insumo')" title="Hasta">
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('insumo')">
           Pedidos de la semana
         </button>
@@ -352,6 +366,24 @@
           <button class="primario" onclick="importarArchivo()">Importar</button>
         </div>
         <div id="imp-aviso"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Actualizar fechas de salida</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí el export de seguimiento de producción (columnas <strong>Pedido</strong>, <strong>FIngreso</strong>,
+          <strong>FSalida</strong>). Actualiza la fecha de ingreso y la fecha de salida de los pedidos que
+          <strong>ya existen</strong> en el sistema — nunca crea pedidos nuevos ni toca ningún otro dato. La fecha
+          de salida pasa a ser el criterio principal para repartir el stock disponible entre pedidos (antes de
+          eso, se usa la fecha pactada).
+        </p>
+        <div class="fila-form">
+          <label>Archivo
+            <input type="file" id="fechas-archivo" accept=".xls,.html,.htm">
+          </label>
+          <button class="primario" onclick="actualizarFechasSeguimiento()">Actualizar fechas</button>
+        </div>
+        <div id="fechas-aviso"></div>
       </div>
     </section>
 
@@ -540,7 +572,7 @@ async function cargarTodo() {
     .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida')
     .eq('activo', false)
     .order('id'));
-  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada').order('numero'));
+  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida').order('numero'));
   const infoPorPedido = {};
   (pedidosInfo || []).forEach(p => infoPorPedido[p.numero] = p);
   const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor').order('codigo'));
@@ -556,6 +588,8 @@ async function cargarTodo() {
       pedido_numero: r.pedido_numero,
       cliente: info.cliente,
       fecha_pactada: info.fecha_pactada,
+      fecha_ingreso: info.fecha_ingreso,
+      fecha_salida: info.fecha_salida,
       material_codigo: r.material_codigo,
       material_nombre: mat.nombre,
       proveedor: mat.proveedor,
@@ -580,6 +614,22 @@ function redondear2(n) {
   return r.toFixed(2).replace(/0$/, '');
 }
 
+// Filtro por rango de fecha (ingreso / pactada / salida), elegido con el
+// select "filtro-campo-fecha-<rubro>". Si el pedido no tiene cargada esa
+// fecha y hay un rango puesto, lo deja afuera (para no mezclar "sin dato"
+// con "dentro del rango").
+function pasaFiltroFecha(rubro, fechaIngreso, fechaPactada, fechaSalida) {
+  const desde = document.getElementById('filtro-fecha-desde-' + rubro).value;
+  const hasta = document.getElementById('filtro-fecha-hasta-' + rubro).value;
+  if (!desde && !hasta) return true;
+  const campo = document.getElementById('filtro-campo-fecha-' + rubro).value;
+  const valor = { fecha_ingreso: fechaIngreso, fecha_pactada: fechaPactada, fecha_salida: fechaSalida }[campo];
+  if (!valor) return false;
+  if (desde && valor < desde) return false;
+  if (hasta && valor > hasta) return false;
+  return true;
+}
+
 function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
@@ -587,7 +637,7 @@ function renderizarPedidos(rubro) {
     thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
     renderizarPorMaterial(rubro);
   } else {
-    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>';
+    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
     renderizarPorPedido(rubro);
   }
 }
@@ -622,11 +672,14 @@ function renderizarPorPedido(rubro) {
     const estado = estadosPedidos[numero] || { estado: 'en_produccion', materiales_pendientes: '?', materiales_totales: '?' };
     const cliente = materiales[0].cliente || '';
     const fecha = materiales[0].fecha_pactada || '';
+    const fechaIngreso = materiales[0].fecha_ingreso || '';
+    const fechaSalida = materiales[0].fecha_salida || '';
 
     const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
     if (filtroTexto && !textoBusqueda.includes(filtroTexto)) return;
     if (!esVistaCerrados && filtroEstado !== 'todos' && estado.estado !== filtroEstado) return;
     if (!esVistaCerrados && ocultarCubierto && estado.estado === 'entregado') return;
+    if (!pasaFiltroFecha(rubro, fechaIngreso, fecha, fechaSalida)) return;
 
     // Agrupar por material (el mismo material puede pedirse en varias
     // estructuras/piezas del pedido — varias líneas de "rgln") ANTES de
@@ -666,6 +719,7 @@ function renderizarPorPedido(rubro) {
         <button style="border:none;background:none;cursor:pointer;color:var(--gris-claro);font-size:11px;"
                 onclick="event.stopPropagation(); editarFecha(${numero}, '${rubro}', '${fecha}')">✎</button>
       </td>
+      <td>${fechaSalida || '<span style="color:var(--gris-claro);">—</span>'}</td>
       <td>${esVistaCerrados ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
         ${esVistaCerrados
@@ -714,7 +768,7 @@ function renderizarPorPedido(rubro) {
           `;
         })();
 
-    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="7"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th></tr></thead>
         <tbody>${filasMat}</tbody>
@@ -725,7 +779,7 @@ function renderizarPorPedido(rubro) {
   });
 
   if (pedidosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
   }
 }
 
@@ -760,13 +814,17 @@ function renderizarPorMaterial(rubro) {
       grupo.pedidos[fila.pedido_numero] = {
         cliente: fila.cliente,
         fecha_pactada: fila.fecha_pactada,
+        fecha_ingreso: fila.fecha_ingreso,
+        fecha_salida: fila.fecha_salida,
         estado: estadoPedido.estado,
         requerido: 0,
         pendiente: 0,
+        prioridad: false,
       };
     }
     grupo.pedidos[fila.pedido_numero].requerido += Number(fila.cantidad_requerida);
     grupo.pedidos[fila.pedido_numero].pendiente += Number(fila.pendiente);
+    grupo.pedidos[fila.pedido_numero].prioridad = grupo.pedidos[fila.pedido_numero].prioridad || !!fila.prioridad_manual;
   });
 
   const codigosOrdenados = Object.keys(porMaterial)
@@ -780,7 +838,7 @@ function renderizarPorMaterial(rubro) {
   codigosOrdenados.forEach(codigo => {
     const g = porMaterial[codigo];
     const pedidosDelMaterial = Object.entries(g.pedidos)
-      .filter(([, p]) => !ocultarCubierto || p.pendiente > 0);
+      .filter(([, p]) => (!ocultarCubierto || p.pendiente > 0) && pasaFiltroFecha(rubro, p.fecha_ingreso, p.fecha_pactada, p.fecha_salida));
     if (pedidosDelMaterial.length === 0) return;
     const pendienteTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.pendiente, 0);
 
@@ -800,15 +858,30 @@ function renderizarPorMaterial(rubro) {
     tbody.appendChild(trMat);
 
     const filasPedido = pedidosDelMaterial
-      .sort((a, b) => (a[1].fecha_pactada || '').localeCompare(b[1].fecha_pactada || ''))
+      .sort((a, b) => (a[1].fecha_salida || a[1].fecha_pactada || '').localeCompare(b[1].fecha_salida || b[1].fecha_pactada || ''))
       .map(([numero, p]) => `
         <tr>
           <td>${numero}</td>
           <td>${p.cliente || ''}</td>
           <td>${p.fecha_pactada || ''}</td>
+          <td>${p.fecha_salida || ''}</td>
           <td>${redondear2(p.requerido)}</td>
           <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
-          <td>${esVistaCerrados ? 'Cerrado manualmente' : (p.estado === 'entregado' ? 'Entregado' : 'En producción')}</td>
+          <td>
+            ${esVistaCerrados
+              ? 'Cerrado manualmente'
+              : `${p.estado === 'entregado' ? 'Entregado' : 'En producción'}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
+            }
+          </td>
+          <td>
+            ${esVistaCerrados ? '' : `
+              <button class="primario" style="font-size:11px; padding:4px 8px;"
+                      onclick="event.stopPropagation(); priorizarPedido(${numero}, '${rubro}', ${p.prioridad})"
+                      title="Prioriza este pedido en herrajes e insumos a la vez">
+                ${p.prioridad ? 'Quitar' : 'Priorizar'}
+              </button>
+            `}
+          </td>
         </tr>
       `).join('');
 
@@ -818,7 +891,7 @@ function renderizarPorMaterial(rubro) {
     trDetalle.style.display = 'none';
     trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
       <table>
-        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Requerido</th><th>Pendiente</th><th>Estado</th></tr></thead>
+        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
       </table>
     </div></td>`;
@@ -1150,6 +1223,17 @@ function parsearFechaArgentina(txt) {
   return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
 }
 
+// Igual que parsearFechaArgentina pero también acepta separador "-"
+// (el export de seguimiento de producción trae DD-MM-AAAA, con guiones).
+function parsearFechaFlexible(txt) {
+  if (!txt) return null;
+  const m = txt.trim().match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (!m) return null;
+  let [, d, mo, y] = m;
+  if (y.length === 2) y = '20' + y;
+  return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+}
+
 function leerTablaHTML(texto) {
   const doc = new DOMParser().parseFromString(texto, 'text/html');
   const tabla = doc.querySelector('table');
@@ -1275,6 +1359,71 @@ async function importarArchivo() {
   aviso.innerHTML = mensaje;
   archivoInput.value = '';
   await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// FECHAS DE SALIDA (export de seguimiento de producción)
+// Solo ACTUALIZA pedidos que ya existen (nunca crea pedidos nuevos) —
+// usa la función actualizar_fechas_pedidos() para que sea un UPDATE
+// real por lote, no N updates uno por uno.
+// ---------------------------------------------------------------------
+async function actualizarFechasSeguimiento() {
+  const aviso = document.getElementById('fechas-aviso');
+  aviso.innerHTML = '<div class="aviso info">Procesando...</div>';
+  const archivoInput = document.getElementById('fechas-archivo');
+  if (!archivoInput.files.length) {
+    aviso.innerHTML = '<div class="aviso error">Elegí un archivo primero.</div>';
+    return;
+  }
+  const texto = await archivoInput.files[0].text();
+
+  let registros;
+  try {
+    registros = leerTablaHTML(texto);
+  } catch (e) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo leer el archivo: ${e.message}</div>`;
+    return;
+  }
+
+  const porPedido = {};
+  registros.forEach(r => {
+    const numero = parseInt(r['Pedido']);
+    if (!numero) return;
+    porPedido[numero] = {
+      numero,
+      fecha_ingreso: parsearFechaFlexible(r['FIngreso']),
+      fecha_salida: parsearFechaFlexible(r['FSalida']),
+    };
+  });
+  const pares = Object.values(porPedido);
+  if (pares.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">No se pudo interpretar ninguna fila. Revisá que sea el export de seguimiento (columnas Pedido, FIngreso, FSalida).</div>';
+    return;
+  }
+
+  const numeros = pares.map(p => p.numero);
+  const { data: existentes, error: errExist } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero').in('numero', numeros));
+  if (errExist) {
+    aviso.innerHTML = `<div class="aviso error">Error consultando pedidos: ${errExist.message}</div>`;
+    return;
+  }
+  const numerosExistentes = new Set((existentes || []).map(p => p.numero));
+  const coinciden = pares.filter(p => numerosExistentes.has(p.numero)).length;
+  const sinPedido = pares.length - coinciden;
+
+  const { error } = await sb.rpc('actualizar_fechas_pedidos', { p_pares: pares });
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">Error actualizando fechas: ${error.message}</div>`;
+    return;
+  }
+
+  await cargarTodo();
+  let mensaje = `<div class="aviso ok">Fechas actualizadas en ${coinciden} pedido(s).</div>`;
+  if (sinPedido > 0) {
+    mensaje += `<div class="aviso info">${sinPedido} pedido(s) del archivo todavía no existen en el sistema — no se tocan hasta que entren por "Importar del sistema".</div>`;
+  }
+  aviso.innerHTML = mensaje;
+  archivoInput.value = '';
 }
 
 // ---------------------------------------------------------------------
