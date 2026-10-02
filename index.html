@@ -246,6 +246,9 @@
           <input type="checkbox" id="ocultar-cubierto-herraje" onchange="renderizarPedidos('herraje')">
           Ocultar lo ya cubierto
         </label>
+        <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('herraje')">
+          Pedidos de la semana
+        </button>
       </div>
       <table class="pedidos"><thead id="thead-herraje">
         <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
@@ -269,6 +272,9 @@
           <input type="checkbox" id="ocultar-cubierto-insumo" onchange="renderizarPedidos('insumo')">
           Ocultar lo ya cubierto
         </label>
+        <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('insumo')">
+          Pedidos de la semana
+        </button>
       </div>
       <table class="pedidos"><thead id="thead-insumo">
         <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
@@ -300,6 +306,28 @@
         <div id="rec-sugerencias" style="font-size:12px; color:var(--gris-claro); max-height:120px; overflow:auto;"></div>
         <div id="rec-previa" style="font-size:13px; color:var(--gris-oscuro); font-weight:500;"></div>
         <div id="rec-aviso"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Últimas recepciones cargadas</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Para chequear si algo ya se cargó antes de volver a cargarlo.
+        </p>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="rec-hist-rubro" onchange="cargarHistorialRecepciones()">
+              <option value="todos">Todos</option>
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Buscar
+            <input type="text" id="rec-hist-busqueda" placeholder="Código o nombre..." oninput="cargarHistorialRecepciones()">
+          </label>
+        </div>
+        <table class="pedidos"><thead>
+          <tr><th>Fecha</th><th>Código</th><th>Material</th><th>Cantidad</th><th>Pedido</th><th>Cargado por</th></tr>
+        </thead><tbody id="tbody-rec-historial"></tbody></table>
       </div>
     </section>
 
@@ -466,6 +494,7 @@ function cambiarTab(tab) {
   document.querySelectorAll('.seccion').forEach(s => s.classList.remove('activa'));
   document.getElementById('sec-' + tab).classList.add('activa');
   if (tab === 'catalogo') cargarCatalogo();
+  if (tab === 'recepcion') cargarHistorialRecepciones();
 }
 
 // ---------------------------------------------------------------------
@@ -558,7 +587,7 @@ function renderizarPedidos(rubro) {
     thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
     renderizarPorMaterial(rubro);
   } else {
-    thead.innerHTML = '<tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>';
+    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>';
     renderizarPorPedido(rubro);
   }
 }
@@ -627,6 +656,9 @@ function renderizarPorPedido(rubro) {
       det.style.display = det.style.display === 'none' ? 'table-row' : 'none';
     };
     trPedido.innerHTML = `
+      <td onclick="event.stopPropagation()">
+        ${esVistaCerrados ? '' : `<input type="checkbox" class="chk-semana-${rubro}" value="${numero}" onclick="event.stopPropagation()">`}
+      </td>
       <td><strong>${numero}</strong></td>
       <td>${cliente}</td>
       <td id="fecha-vista-${rubro}-${numero}">
@@ -682,7 +714,7 @@ function renderizarPorPedido(rubro) {
           `;
         })();
 
-    trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th></tr></thead>
         <tbody>${filasMat}</tbody>
@@ -693,7 +725,7 @@ function renderizarPorPedido(rubro) {
   });
 
   if (pedidosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
   }
 }
 
@@ -873,6 +905,73 @@ async function priorizarPedido(numero, rubro, quitar) {
 }
 
 // ---------------------------------------------------------------------
+// PEDIDOS DE LA SEMANA (selección múltiple): prioriza los seleccionados
+// en herrajes+insumos y, de los que ya quedaron sin pendiente real, los
+// marca como entregados. A los que SÍ siguen con algo pendiente no los
+// cierra solo — los muestra aparte para que decidas a mano, porque
+// "marcar entregado" ciego sobre un pedido que todavía le falta algo
+// hace desaparecer un faltante real de la lista de pendientes.
+// ---------------------------------------------------------------------
+async function pedidosDeLaSemana(rubro) {
+  const seleccionados = Array.from(document.querySelectorAll('.chk-semana-' + rubro + ':checked'))
+    .map(chk => parseInt(chk.value));
+
+  if (seleccionados.length === 0) {
+    alert('Marcá al menos un pedido con la casilla antes de usar este botón.');
+    return;
+  }
+
+  if (!confirm(`Vas a priorizar ${seleccionados.length} pedido(s) (en herrajes e insumos a la vez). Después, los que ya no tengan nada pendiente se marcan como entregados automáticamente. ¿Confirmás?`)) return;
+
+  // 1) Priorizar todos los seleccionados, en ambos rubros.
+  const { error: errPrioridad } = await sb
+    .from('requerimientos')
+    .update({ prioridad_manual: true, prioridad_marcada_en: new Date().toISOString() })
+    .in('pedido_numero', seleccionados)
+    .eq('activo', true);
+
+  if (errPrioridad) {
+    alert('No se pudo priorizar: ' + errPrioridad.message);
+    return;
+  }
+
+  // 2) Releer pendientes reales (ya con la nueva prioridad aplicada) para
+  //    decidir cuáles se pueden cerrar solos y cuáles no.
+  await cargarTodo();
+
+  const pendientePorPedido = {};
+  datosPendientes[rubro].forEach(fila => {
+    if (!seleccionados.includes(fila.pedido_numero)) return;
+    pendientePorPedido[fila.pedido_numero] = (pendientePorPedido[fila.pedido_numero] || 0) + Number(fila.pendiente);
+  });
+
+  const cubiertos = seleccionados.filter(n => !(pendientePorPedido[n] > 0));
+  const conFaltante = seleccionados.filter(n => pendientePorPedido[n] > 0);
+
+  if (cubiertos.length > 0) {
+    const { error: errCierre } = await sb
+      .from('requerimientos')
+      .update({ activo: false })
+      .in('pedido_numero', cubiertos)
+      .eq('material_rubro', rubro)
+      .eq('activo', true);
+    if (errCierre) {
+      alert('Se priorizaron todos, pero falló al marcar entregados: ' + errCierre.message);
+      await cargarTodo();
+      return;
+    }
+  }
+
+  await cargarTodo();
+
+  let resumen = `Priorizados: ${seleccionados.length}.\nMarcados como entregados (sin pendiente en ${rubro}): ${cubiertos.length}.`;
+  if (conFaltante.length > 0) {
+    resumen += `\n\nOJO: estos quedaron priorizados pero TODAVÍA tienen pendiente en ${rubro}, así que NO los marqué entregados (para no esconder el faltante): ${conFaltante.join(', ')}.`;
+  }
+  alert(resumen);
+}
+
+// ---------------------------------------------------------------------
 // RECEPCIONES
 // ---------------------------------------------------------------------
 function buscarMateriales() {
@@ -925,6 +1024,67 @@ function actualizarPreviaConversion() {
   } else {
     previa.textContent = '';
   }
+}
+
+// ---------------------------------------------------------------------
+// HISTORIAL DE RECEPCIONES (últimas cargas, para no duplicar)
+// ---------------------------------------------------------------------
+let nombresPorUsuarioId = {};
+
+async function cargarHistorialRecepciones() {
+  const rubro = document.getElementById('rec-hist-rubro').value;
+  const q = (document.getElementById('rec-hist-busqueda').value || '').toLowerCase();
+  const tbody = document.getElementById('tbody-rec-historial');
+  tbody.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
+
+  let consulta = sb
+    .from('recepciones')
+    .select('fecha, material_codigo, material_rubro, cantidad, cantidad_contada, pedido_numero, usuario_id')
+    .order('fecha', { ascending: false })
+    .limit(100);
+  if (rubro !== 'todos') consulta = consulta.eq('material_rubro', rubro);
+
+  const { data, error } = await consulta;
+  if (error) {
+    tbody.innerHTML = `<tr><td colspan="6">Error: ${error.message}</td></tr>`;
+    return;
+  }
+
+  // Nombres de usuario (cache, para no repetir consultas)
+  if (Object.keys(nombresPorUsuarioId).length === 0) {
+    const { data: perfiles } = await obtenerTodasLasFilas(() => sb.from('perfiles').select('id, nombre').order('id'));
+    (perfiles || []).forEach(p => nombresPorUsuarioId[p.id] = p.nombre);
+  }
+
+  const filtrados = (data || []).filter(r => {
+    if (!q) return true;
+    const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro);
+    return String(r.material_codigo).includes(q) || (mat && (mat.nombre || '').toLowerCase().includes(q));
+  });
+
+  tbody.innerHTML = '';
+  if (filtrados.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">Sin recepciones cargadas todavía.</td></tr>';
+    return;
+  }
+
+  filtrados.forEach(r => {
+    const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro);
+    const fecha = new Date(r.fecha).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const cantidadTexto = r.cantidad_contada && Number(r.cantidad_contada) !== Number(r.cantidad)
+      ? `${redondear2(r.cantidad_contada)} ${mat?.unidad_conteo || ''} = ${redondear2(r.cantidad)} ${mat?.umed || ''}`
+      : `${redondear2(r.cantidad)} ${mat?.umed || ''}`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${fecha}</td>
+      <td>${r.material_codigo}</td>
+      <td>${mat?.nombre || '(material no encontrado)'}</td>
+      <td>${cantidadTexto}</td>
+      <td>${r.pedido_numero || '<span style="color:var(--gris-claro);">stock general</span>'}</td>
+      <td>${nombresPorUsuarioId[r.usuario_id] || ''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
 }
 
 async function cargarRecepcion() {
