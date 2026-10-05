@@ -227,6 +227,8 @@
     <button data-tab="catalogo" class="tab-btn solo-comprador" onclick="cambiarTab('catalogo')">Catálogo / factores</button>
   </nav>
 
+  <div id="banner-importacion" style="display:none; max-width:1100px; margin:12px auto 0; padding:0 16px;"></div>
+
   <main>
     <!-- HERRAJES / INSUMOS -->
     <section id="sec-herraje" class="seccion activa">
@@ -553,6 +555,53 @@ async function obtenerTodasLasFilas(construirQuery, tamanoPagina = 1000) {
   return { data: todo, error: null };
 }
 
+// ---------------------------------------------------------------------
+// AVISO DE ÚLTIMA IMPORTACIÓN (por rubro, desde imports_log)
+// Avisa en amarillo si falta importar: cuenta los días hábiles (lun-vie)
+// transcurridos desde la última importación; si hay alguno, la carga de
+// hoy (o de días anteriores) todavía no se hizo.
+// ---------------------------------------------------------------------
+function fechaLocalISO(d) {
+  return d.toLocaleDateString('en-CA'); // AAAA-MM-DD en hora local
+}
+
+function diasHabilesDesde(fechaISO) {
+  const hoy = new Date(fechaLocalISO(new Date()) + 'T00:00:00');
+  const cursor = new Date(fechaISO + 'T00:00:00');
+  let n = 0;
+  while (cursor < hoy) {
+    cursor.setDate(cursor.getDate() + 1);
+    const dia = cursor.getDay();
+    if (dia !== 0 && dia !== 6) n++;
+  }
+  return n;
+}
+
+async function cargarUltimaImportacion() {
+  const cont = document.getElementById('banner-importacion');
+  const { data, error } = await obtenerTodasLasFilas(() => sb.from('imports_log').select('rubro, fecha').order('fecha', { ascending: false }).order('id', { ascending: false }));
+  if (error) { cont.style.display = 'none'; return; }
+
+  const ultimo = {};
+  (data || []).forEach(r => { if (!ultimo[r.rubro]) ultimo[r.rubro] = r.fecha; });
+
+  let hayAtraso = false;
+  const partes = ['herraje', 'insumo'].map(rubro => {
+    const nombre = rubro === 'herraje' ? 'Herrajes' : 'Insumos';
+    if (!ultimo[rubro]) { hayAtraso = true; return `${nombre}: <strong>nunca se importó</strong>`; }
+    const f = new Date(ultimo[rubro]);
+    const habiles = diasHabilesDesde(fechaLocalISO(f));
+    if (habiles > 0) hayAtraso = true;
+    const texto = f.toLocaleString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return `${nombre}: <strong>${texto}</strong>${habiles > 0 ? ` (hace ${habiles} día${habiles > 1 ? 's' : ''} hábil${habiles > 1 ? 'es' : ''})` : ''}`;
+  });
+
+  cont.style.display = 'block';
+  cont.innerHTML = hayAtraso
+    ? `<div class="aviso" style="background:#fff4d6; color:#7a5a00; margin-top:0;">⚠ Falta importar pedidos nuevos. Última importación — ${partes.join(' · ')}</div>`
+    : `<div class="aviso info" style="margin-top:0;">Última importación — ${partes.join(' · ')}</div>`;
+}
+
 // Un pedido cuya fecha de salida ya pasó ya salió de fábrica, haya
 // quedado o no algún material sin cubrir (se resolvió de otra forma, o
 // se mandó igual). Se cierra solo — mismo efecto que "Marcar como
@@ -646,6 +695,7 @@ async function cargarTodo() {
 
   renderizarPedidos('herraje');
   renderizarPedidos('insumo');
+  cargarUltimaImportacion();
 }
 
 function redondear2(n) {
