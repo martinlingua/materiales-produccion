@@ -238,7 +238,7 @@
           <option value="todos">Todos los estados</option>
           <option value="en_produccion" selected>En producción</option>
           <option value="entregado">Entregados</option>
-          <option value="cerrado_manual">Cerrados manualmente</option>
+          <option value="cerrado_manual">Despachados / cerrados</option>
         </select>
         <select id="vista-herraje" onchange="renderizarPedidos('herraje')">
           <option value="pedido">Ver por pedido</option>
@@ -249,7 +249,6 @@
           Ocultar lo ya cubierto
         </label>
         <select id="filtro-campo-fecha-herraje" onchange="renderizarPedidos('herraje')" title="Qué fecha usar para el rango de abajo">
-          <option value="fecha_pactada">F. pactada</option>
           <option value="fecha_ingreso">F. ingreso</option>
           <option value="fecha_salida" selected>F. salida</option>
         </select>
@@ -260,7 +259,7 @@
         </button>
       </div>
       <table class="pedidos"><thead id="thead-herraje">
-        <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
+        <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
       </thead><tbody id="tbody-herraje"></tbody></table>
     </section>
 
@@ -271,7 +270,7 @@
           <option value="todos">Todos los estados</option>
           <option value="en_produccion" selected>En producción</option>
           <option value="entregado">Entregados</option>
-          <option value="cerrado_manual">Cerrados manualmente</option>
+          <option value="cerrado_manual">Despachados / cerrados</option>
         </select>
         <select id="vista-insumo" onchange="renderizarPedidos('insumo')">
           <option value="pedido">Ver por pedido</option>
@@ -282,7 +281,6 @@
           Ocultar lo ya cubierto
         </label>
         <select id="filtro-campo-fecha-insumo" onchange="renderizarPedidos('insumo')" title="Qué fecha usar para el rango de abajo">
-          <option value="fecha_pactada">F. pactada</option>
           <option value="fecha_ingreso">F. ingreso</option>
           <option value="fecha_salida" selected>F. salida</option>
         </select>
@@ -293,7 +291,7 @@
         </button>
       </div>
       <table class="pedidos"><thead id="thead-insumo">
-        <tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>Materiales pendientes</th><th>Estado</th></tr>
+        <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
       </thead><tbody id="tbody-insumo"></tbody></table>
     </section>
 
@@ -596,26 +594,29 @@ async function cargarUltimaImportacion() {
     return `${nombre}: <strong>${texto}</strong>${habiles > 0 ? ` (hace ${habiles} día${habiles > 1 ? 's' : ''} hábil${habiles > 1 ? 'es' : ''})` : ''}`;
   });
 
+  const avisoCierres = pedidosCerradosAuto.size > 0
+    ? `<div class="aviso info" style="margin-top:6px;">Se cerraron automáticamente ${pedidosCerradosAuto.size} pedido(s) con fecha de salida vencida. Los ves en el filtro "Despachados / cerrados".</div>`
+    : '';
   cont.style.display = 'block';
-  cont.innerHTML = hayAtraso
+  cont.innerHTML = (hayAtraso
     ? `<div class="aviso" style="background:#fff4d6; color:#7a5a00; margin-top:0;">⚠ Falta importar pedidos nuevos. Última importación — ${partes.join(' · ')}</div>`
-    : `<div class="aviso info" style="margin-top:0;">Última importación — ${partes.join(' · ')}</div>`;
+    : `<div class="aviso info" style="margin-top:0;">Última importación — ${partes.join(' · ')}</div>`) + avisoCierres;
 }
 
-// Un pedido cuya fecha de salida ya pasó ya salió de fábrica, haya
-// quedado o no algún material sin cubrir (se resolvió de otra forma, o
-// se mandó igual). Se cierra solo — mismo efecto que "Marcar como
-// entregado" manual, en herrajes e insumos a la vez — para que deje de
-// competir por stock con pedidos que sí siguen en producción y para que
-// no siga figurando como pendiente. Si hace falta, se reabre a mano
-// desde "Cerrados manualmente". Solo lo intentan comprador/deposito
-// (lectura no tiene permiso de escritura en requerimientos igual).
+// Un pedido cuya fecha de salida ya pasó (anterior a hoy) ya salió de
+// fábrica: se cierra solo, exactamente igual que "Marcar como entregado" a
+// mano, en herrajes e insumos a la vez y SIN mirar si quedó algún material
+// sin cubrir. Sale de la lista de pendientes y de la cola de reparto de
+// stock; se ve en el filtro "Despachados / cerrados" y se puede reabrir
+// desde ahí. Solo lo intentan comprador/deposito (lectura no tiene permiso
+// de escritura).
+let pedidosCerradosAuto = new Set();
+
 async function cerrarPorFechaSalidaVencida(filasPendientes) {
-  if (!perfilActual || (perfilActual.rol !== 'comprador' && perfilActual.rol !== 'deposito')) return false;
-  const hoy = new Date().toISOString().slice(0, 10);
+  if (!puedeEscribir()) return false;
   const aCerrarPorRubro = {};
   filasPendientes.forEach(f => {
-    if (f.fecha_salida && f.fecha_salida < hoy && Number(f.pendiente) > 0) {
+    if (esDespachado(f.fecha_salida)) {
       if (!aCerrarPorRubro[f.material_rubro]) aCerrarPorRubro[f.material_rubro] = new Set();
       aCerrarPorRubro[f.material_rubro].add(f.pedido_numero);
     }
@@ -624,15 +625,22 @@ async function cerrarPorFechaSalidaVencida(filasPendientes) {
   let huboCambios = false;
   for (const rubro of Object.keys(aCerrarPorRubro)) {
     const numeros = Array.from(aCerrarPorRubro[rubro]);
-    if (numeros.length === 0) continue;
-    const { error } = await sb
-      .from('requerimientos')
-      .update({ activo: false })
-      .in('pedido_numero', numeros)
-      .eq('material_rubro', rubro)
-      .eq('activo', true);
-    if (!error) huboCambios = true;
-    else console.error('No se pudo cerrar automáticamente por fecha de salida:', error);
+    // de a tandas para no pasarse del largo máximo de la URL
+    for (let i = 0; i < numeros.length; i += 150) {
+      const tanda = numeros.slice(i, i + 150);
+      const { error } = await sb
+        .from('requerimientos')
+        .update({ activo: false })
+        .in('pedido_numero', tanda)
+        .eq('material_rubro', rubro)
+        .eq('activo', true);
+      if (error) {
+        console.error('No se pudo cerrar automáticamente por fecha de salida:', error);
+      } else {
+        huboCambios = true;
+        tanda.forEach(n => pedidosCerradosAuto.add(n));
+      }
+    }
   }
   return huboCambios;
 }
@@ -660,7 +668,7 @@ async function cargarTodo() {
   // v_pendientes porque esa vista solo trae requerimientos activos.
   const { data: cerrados } = await obtenerTodasLasFilas(() => sb
     .from('requerimientos')
-    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida')
+    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por')
     .eq('activo', false)
     .order('id'));
   const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida').order('numero'));
@@ -685,6 +693,7 @@ async function cargarTodo() {
       material_nombre: mat.nombre,
       proveedor: mat.proveedor,
       cantidad_requerida: r.cantidad_requerida,
+      reemplazado_por: r.reemplazado_por,
       pendiente: 0,
     });
   });
@@ -712,9 +721,16 @@ function redondear2(n) {
 // con "dentro del rango").
 // Despachado = fecha de salida estrictamente anterior a hoy (si sale hoy,
 // todavía no se considera despachado).
+function esDespachado(fechaSalida) {
+  return !!fechaSalida && fechaSalida < fechaLocalISO(new Date());
+}
+
+function puedeEscribir() {
+  return !!perfilActual && (perfilActual.rol === 'comprador' || perfilActual.rol === 'deposito');
+}
+
 function estadoEfectivo(estadoStock, fechaSalida) {
-  if (fechaSalida && fechaSalida < fechaLocalISO(new Date())) return 'entregado';
-  return estadoStock;
+  return esDespachado(fechaSalida) ? 'entregado' : estadoStock;
 }
 
 function pasaFiltroFecha(rubro, fechaIngreso, fechaPactada, fechaSalida) {
@@ -736,7 +752,7 @@ function renderizarPedidos(rubro) {
     thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
     renderizarPorMaterial(rubro);
   } else {
-    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
+    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
     renderizarPorPedido(rubro);
   }
 }
@@ -802,6 +818,7 @@ function renderizarPorPedido(rubro) {
           proveedor: m.proveedor,
           requerido: 0,
           pendiente: 0,
+          reemplazadoPor: m.reemplazado_por || null,
         };
       }
       porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
@@ -822,16 +839,13 @@ function renderizarPorPedido(rubro) {
       </td>
       <td><strong>${numero}</strong></td>
       <td>${cliente}</td>
-      <td id="fecha-vista-${rubro}-${numero}">
-        <span>${fecha}</span>
-        <button style="border:none;background:none;cursor:pointer;color:var(--gris-claro);font-size:11px;"
-                onclick="event.stopPropagation(); editarFecha(${numero}, '${rubro}', '${fecha}')">✎</button>
-      </td>
       <td>${fechaSalida || '<span style="color:var(--gris-claro);">—</span>'}</td>
       <td>${esVistaCerrados ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
         ${esVistaCerrados
-          ? '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>'
+          ? (esDespachado(fechaSalida)
+              ? '<span class="chip entregado">Entregado</span>'
+              : '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>')
           : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Entregado' : 'En producción'}</span>
              ${materiales.some(m => m.prioridad_manual) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
         }
@@ -849,10 +863,13 @@ function renderizarPorPedido(rubro) {
       .map(([codigo, m]) => `
       <tr>
         <td>${codigo}</td>
-        <td>${m.nombre}</td>
+        <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}</td>
         <td>${redondear2(m.requerido)}</td>
         <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(m.pendiente)}</td>
         <td>${m.proveedor || ''}</td>
+        <td>${(esVistaCerrados || !puedeEscribir()) ? '' : `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
+                    onclick="event.stopPropagation(); reemplazarMaterial(${numero}, '${rubro}', ${codigo})"
+                    title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>`}</td>
       </tr>
     `).join('');
 
@@ -876,9 +893,9 @@ function renderizarPorPedido(rubro) {
           `;
         })();
 
-    trDetalle.innerHTML = `<td colspan="7"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
       <table>
-        <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th></tr></thead>
+        <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th><th></th></tr></thead>
         <tbody>${filasMat}</tbody>
       </table>
       ${botones}
@@ -887,7 +904,7 @@ function renderizarPorPedido(rubro) {
   });
 
   if (pedidosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
   }
 }
 
@@ -972,13 +989,12 @@ function renderizarPorMaterial(rubro) {
         <tr>
           <td>${numero}</td>
           <td>${p.cliente || ''}</td>
-          <td>${p.fecha_pactada || ''}</td>
           <td>${p.fecha_salida || ''}</td>
           <td>${redondear2(p.requerido)}</td>
           <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
           <td>
             ${esVistaCerrados
-              ? 'Cerrado manualmente'
+              ? (esDespachado(p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
               : `${p.estado === 'entregado' ? 'Entregado' : 'En producción'}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
             }
           </td>
@@ -989,6 +1005,9 @@ function renderizarPorMaterial(rubro) {
                       title="Prioriza este pedido en herrajes e insumos a la vez">
                 ${p.prioridad ? 'Quitar' : 'Priorizar'}
               </button>
+              ${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:4px 8px; background:var(--gris-claro);"
+                      onclick="event.stopPropagation(); reemplazarMaterial(${numero}, '${rubro}', ${codigo})"
+                      title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>` : ''}
             `}
           </td>
         </tr>
@@ -1000,7 +1019,7 @@ function renderizarPorMaterial(rubro) {
     trDetalle.style.display = 'none';
     trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
       <table>
-        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. pactada</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
       </table>
     </div></td>`;
@@ -1081,6 +1100,79 @@ async function priorizarPedido(numero, rubro, quitar) {
 
   if (error) {
     alert('No se pudo actualizar la prioridad: ' + error.message);
+    return;
+  }
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// REEMPLAZAR MATERIAL EN UN PEDIDO
+// El material original queda cerrado (activo=false, con "reemplazado_por")
+// y se crea el requerimiento del material nuevo, que descuenta de SU stock
+// por el reparto normal. Si el nuevo no tiene stock suficiente, queda
+// pendiente el nuevo — no se fuerza nada. El original queda cerrado en vez
+// de borrado para que un re-import del mismo pedido no lo vuelva a crear.
+// ---------------------------------------------------------------------
+async function reemplazarMaterial(numero, rubro, codigoViejo) {
+  const viejo = materialesCache.find(m => m.codigo === codigoViejo && m.rubro === rubro);
+  const entrada = prompt(`Reemplazar "${viejo ? viejo.nombre : codigoViejo}" (código ${codigoViejo}) en el pedido ${numero}.\n\nCódigo del material que lo reemplaza (mismo rubro: ${rubro}):`);
+  if (entrada === null) return;
+  const codigoNuevo = parseInt(entrada);
+  if (!codigoNuevo) { alert('Código inválido.'); return; }
+  if (codigoNuevo === codigoViejo) { alert('El código nuevo es igual al original.'); return; }
+  const nuevo = materialesCache.find(m => m.codigo === codigoNuevo && m.rubro === rubro);
+  if (!nuevo) {
+    alert(`El código ${codigoNuevo} no existe en el catálogo de ${rubro}s. Solo se puede reemplazar por un material que ya entró por un import o por la planilla de stock.`);
+    return;
+  }
+  const entradaRatio = prompt(`Nuevo material: ${nuevo.nombre} (${nuevo.umed || 'sin unidad'})\n\n¿Cuántas unidades del nuevo reemplazan a 1 del original? (1 = misma cantidad)`, '1');
+  if (entradaRatio === null) return;
+  const ratio = parseFloat(String(entradaRatio).replace(',', '.'));
+  if (!(ratio > 0)) { alert('La cantidad tiene que ser un número mayor a 0.'); return; }
+
+  const { data: viejas, error: errViejas } = await sb
+    .from('requerimientos')
+    .select('id, rgln, estructura, cantidad_requerida, prioridad_manual, prioridad_marcada_en')
+    .eq('pedido_numero', numero).eq('material_codigo', codigoViejo).eq('material_rubro', rubro).eq('activo', true);
+  if (errViejas || !viejas || viejas.length === 0) {
+    alert('No se encontró el material original activo en este pedido.' + (errViejas ? ' ' + errViejas.message : ''));
+    return;
+  }
+  const { data: existentes, error: errEx } = await sb
+    .from('requerimientos')
+    .select('rgln')
+    .eq('pedido_numero', numero).eq('material_codigo', codigoNuevo).eq('material_rubro', rubro);
+  if (errEx) { alert('No se pudo verificar el pedido: ' + errEx.message); return; }
+  const rglnOcupados = new Set((existentes || []).map(e => e.rgln));
+  if (viejas.some(v => rglnOcupados.has(v.rgln))) {
+    alert(`El pedido ${numero} ya tiene el material ${codigoNuevo} en la misma línea (rgln). No se hizo ningún cambio para no pisarlo.`);
+    return;
+  }
+
+  const totalViejo = viejas.reduce((a, v) => a + Number(v.cantidad_requerida), 0);
+  if (!confirm(`Pedido ${numero}: dejar de pedir "${viejo ? viejo.nombre : codigoViejo}" (${redondear2(totalViejo)}) y pedir "${nuevo.nombre}" (${redondear2(totalViejo * ratio)}).\n\nEl nuevo descuenta de su propio stock. Si no alcanza, queda pendiente el nuevo. ¿Confirmás?`)) return;
+
+  const filasNuevas = viejas.map(v => ({
+    pedido_numero: numero,
+    rgln: v.rgln,
+    material_codigo: codigoNuevo,
+    material_rubro: rubro,
+    estructura: v.estructura,
+    cantidad_requerida: Math.round(Number(v.cantidad_requerida) * ratio * 10000) / 10000,
+    prioridad_manual: v.prioridad_manual,
+    prioridad_marcada_en: v.prioridad_marcada_en,
+  }));
+  const { data: insertadas, error: errIns } = await sb.from('requerimientos').insert(filasNuevas).select('id');
+  if (errIns) { alert('No se pudo crear el material nuevo: ' + errIns.message); return; }
+
+  const { error: errCierre } = await sb
+    .from('requerimientos')
+    .update({ activo: false, reemplazado_por: codigoNuevo })
+    .in('id', viejas.map(v => v.id));
+  if (errCierre) {
+    // deshacer lo que se insertó para no dejar el pedido pidiendo los dos
+    await sb.from('requerimientos').delete().in('id', (insertadas || []).map(r => r.id));
+    alert('No se pudo cerrar el material original, se deshizo el cambio: ' + errCierre.message);
     return;
   }
   await cargarTodo();
