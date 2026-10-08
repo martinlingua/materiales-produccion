@@ -668,7 +668,7 @@ async function cargarTodo() {
   // v_pendientes porque esa vista solo trae requerimientos activos.
   const { data: cerrados } = await obtenerTodasLasFilas(() => sb
     .from('requerimientos')
-    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por')
+    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
     .eq('activo', false)
     .order('id'));
   const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida').order('numero'));
@@ -694,6 +694,7 @@ async function cargarTodo() {
       proveedor: mat.proveedor,
       cantidad_requerida: r.cantidad_requerida,
       reemplazado_por: r.reemplazado_por,
+      ignorado: r.ignorado,
       pendiente: 0,
     });
   });
@@ -819,6 +820,7 @@ function renderizarPorPedido(rubro) {
           requerido: 0,
           pendiente: 0,
           reemplazadoPor: m.reemplazado_por || null,
+          ignorado: !!m.ignorado,
         };
       }
       porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
@@ -863,13 +865,20 @@ function renderizarPorPedido(rubro) {
       .map(([codigo, m]) => `
       <tr>
         <td>${codigo}</td>
-        <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}</td>
+        <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}${m.ignorado ? ' <span style="color:var(--gris-claro);font-size:12px;">→ ignorado (no es faltante)</span>' : ''}</td>
         <td>${redondear2(m.requerido)}</td>
         <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(m.pendiente)}</td>
         <td>${m.proveedor || ''}</td>
-        <td>${(esVistaCerrados || !puedeEscribir()) ? '' : `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
+        <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (esVistaCerrados
+          ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
+                    onclick="event.stopPropagation(); restaurarIgnorado(${numero}, '${rubro}', ${codigo})"
+                    title="Vuelve a pedir este material en el pedido">Dejar de ignorar</button>` : '')
+          : `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
                     onclick="event.stopPropagation(); reemplazarMaterial(${numero}, '${rubro}', ${codigo})"
-                    title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>`}</td>
+                    title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>
+             <button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
+                    onclick="event.stopPropagation(); ignorarMaterial(${numero}, '${rubro}', ${codigo})"
+                    title="No se envía o no hace falta: deja de contar como faltante">Ignorar</button>`)}</td>
       </tr>
     `).join('');
 
@@ -1007,7 +1016,10 @@ function renderizarPorMaterial(rubro) {
               </button>
               ${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:4px 8px; background:var(--gris-claro);"
                       onclick="event.stopPropagation(); reemplazarMaterial(${numero}, '${rubro}', ${codigo})"
-                      title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>` : ''}
+                      title="Cambia este material por otro equivalente en este pedido">Reemplazar</button>
+              <button class="primario" style="font-size:11px; padding:4px 8px; background:var(--gris-claro);"
+                      onclick="event.stopPropagation(); ignorarMaterial(${numero}, '${rubro}', ${codigo})"
+                      title="No se envía o no hace falta: deja de contar como faltante">Ignorar</button>` : ''}
             `}
           </td>
         </tr>
@@ -1073,7 +1085,9 @@ async function reabrirPedido(numero, rubro) {
     .update({ activo: true })
     .eq('pedido_numero', numero)
     .eq('material_rubro', rubro)
-    .eq('activo', false);
+    .eq('activo', false)
+    .is('reemplazado_por', null)
+    .eq('ignorado', false);
   if (error) {
     alert('No se pudo reabrir el pedido: ' + error.message);
     return;
@@ -1113,22 +1127,119 @@ async function priorizarPedido(numero, rubro, quitar) {
 // pendiente el nuevo — no se fuerza nada. El original queda cerrado en vez
 // de borrado para que un re-import del mismo pedido no lo vuelva a crear.
 // ---------------------------------------------------------------------
+function normalizarTexto(t) {
+  return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+// Ventana con buscador: al escribir una o varias palabras (en cualquier
+// orden, en cualquier parte del nombre) va mostrando los materiales del
+// mismo rubro que las contienen a todas. Devuelve {material, ratio} o null.
+function elegirMaterialReemplazo(rubro, codigoExcluido, nombreViejo) {
+  return new Promise(resolve => {
+    const candidatos = materialesCache
+      .filter(m => m.rubro === rubro && m.codigo !== codigoExcluido)
+      .map(m => ({ m, t: normalizarTexto(m.codigo + ' ' + m.nombre + ' ' + (m.proveedor || '')) }));
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;';
+    overlay.innerHTML = `
+      <div style="background:#fff;border-radius:8px;width:min(640px,94vw);padding:18px;box-shadow:0 8px 30px rgba(0,0,0,.3);">
+        <h3 style="margin:0 0 4px;">Reemplazar material</h3>
+        <div style="font-size:13px;color:var(--gris-claro);margin-bottom:10px;">
+          Se deja de pedir: <strong id="rm-viejo"></strong><br>
+          Escribí una o varias palabras del material nuevo, en cualquier orden.
+        </div>
+        <input type="text" id="rm-busqueda" placeholder="Ej: bisagra 110 niquel" autocomplete="off"
+               style="width:100%;box-sizing:border-box;padding:8px;font-size:14px;">
+        <div id="rm-resultados" style="max-height:260px;overflow:auto;margin-top:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;"></div>
+        <div id="rm-seleccion" style="font-size:13px;margin-top:8px;min-height:18px;"></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px;">
+          Unidades del nuevo por cada 1 del original
+          <input type="number" id="rm-ratio" value="1" min="0" step="any" style="width:90px;padding:5px;">
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+          <button id="rm-cancelar" style="padding:7px 14px;">Cancelar</button>
+          <button id="rm-aceptar" class="primario" disabled style="padding:7px 14px;">Reemplazar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#rm-viejo').textContent = nombreViejo;
+
+    const inputBusqueda = overlay.querySelector('#rm-busqueda');
+    const contResultados = overlay.querySelector('#rm-resultados');
+    const contSeleccion = overlay.querySelector('#rm-seleccion');
+    const btnAceptar = overlay.querySelector('#rm-aceptar');
+    let elegido = null;
+
+    function cerrar(resultado) {
+      document.removeEventListener('keydown', alTeclear);
+      overlay.remove();
+      resolve(resultado);
+    }
+    function alTeclear(e) { if (e.key === 'Escape') cerrar(null); }
+    document.addEventListener('keydown', alTeclear);
+
+    function elegir(m) {
+      elegido = m;
+      contSeleccion.textContent = '';
+      const b = document.createElement('strong');
+      b.textContent = `${m.codigo} — ${m.nombre}`;
+      contSeleccion.append('Elegido: ', b, ` (${m.umed || 'sin unidad'})`);
+      btnAceptar.disabled = false;
+    }
+
+    function dibujar() {
+      const palabras = normalizarTexto(inputBusqueda.value).split(/\s+/).filter(Boolean);
+      contResultados.innerHTML = '';
+      if (palabras.length === 0) {
+        contResultados.innerHTML = '<div style="padding:8px;color:var(--gris-claro);">Empezá a escribir para ver opciones…</div>';
+        return;
+      }
+      const coinciden = candidatos
+        .filter(c => palabras.every(p => c.t.includes(p)))
+        .sort((x, y) => (x.m.nombre || '').localeCompare(y.m.nombre || ''));
+      if (coinciden.length === 0) {
+        contResultados.innerHTML = '<div style="padding:8px;color:var(--gris-claro);">Sin coincidencias.</div>';
+        return;
+      }
+      coinciden.slice(0, 40).forEach(({ m }) => {
+        const fila = document.createElement('div');
+        fila.style.cssText = 'padding:6px 8px;cursor:pointer;border-bottom:1px solid #eee;';
+        fila.textContent = `${m.codigo} — ${m.nombre}${m.proveedor ? ' · ' + m.proveedor : ''}${m.umed ? ' · ' + m.umed : ''}`;
+        fila.onmouseenter = () => fila.style.background = '#f5f4f2';
+        fila.onmouseleave = () => fila.style.background = '';
+        fila.onclick = () => elegir(m);
+        contResultados.appendChild(fila);
+      });
+      if (coinciden.length > 40) {
+        const mas = document.createElement('div');
+        mas.style.cssText = 'padding:6px 8px;color:var(--gris-claro);';
+        mas.textContent = `…y ${coinciden.length - 40} más. Agregá otra palabra para acotar.`;
+        contResultados.appendChild(mas);
+      }
+    }
+
+    inputBusqueda.addEventListener('input', dibujar);
+    overlay.querySelector('#rm-cancelar').onclick = () => cerrar(null);
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) cerrar(null); });
+    btnAceptar.onclick = () => {
+      const ratio = parseFloat(String(overlay.querySelector('#rm-ratio').value).replace(',', '.'));
+      if (!elegido) return;
+      if (!(ratio > 0)) { alert('La cantidad tiene que ser un número mayor a 0.'); return; }
+      cerrar({ material: elegido, ratio });
+    };
+    dibujar();
+    inputBusqueda.focus();
+  });
+}
+
 async function reemplazarMaterial(numero, rubro, codigoViejo) {
   const viejo = materialesCache.find(m => m.codigo === codigoViejo && m.rubro === rubro);
-  const entrada = prompt(`Reemplazar "${viejo ? viejo.nombre : codigoViejo}" (código ${codigoViejo}) en el pedido ${numero}.\n\nCódigo del material que lo reemplaza (mismo rubro: ${rubro}):`);
-  if (entrada === null) return;
-  const codigoNuevo = parseInt(entrada);
-  if (!codigoNuevo) { alert('Código inválido.'); return; }
-  if (codigoNuevo === codigoViejo) { alert('El código nuevo es igual al original.'); return; }
-  const nuevo = materialesCache.find(m => m.codigo === codigoNuevo && m.rubro === rubro);
-  if (!nuevo) {
-    alert(`El código ${codigoNuevo} no existe en el catálogo de ${rubro}s. Solo se puede reemplazar por un material que ya entró por un import o por la planilla de stock.`);
-    return;
-  }
-  const entradaRatio = prompt(`Nuevo material: ${nuevo.nombre} (${nuevo.umed || 'sin unidad'})\n\n¿Cuántas unidades del nuevo reemplazan a 1 del original? (1 = misma cantidad)`, '1');
-  if (entradaRatio === null) return;
-  const ratio = parseFloat(String(entradaRatio).replace(',', '.'));
-  if (!(ratio > 0)) { alert('La cantidad tiene que ser un número mayor a 0.'); return; }
+  const eleccion = await elegirMaterialReemplazo(rubro, codigoViejo, `${codigoViejo} — ${viejo ? viejo.nombre : ''}`);
+  if (!eleccion) return;
+  const nuevo = eleccion.material;
+  const codigoNuevo = nuevo.codigo;
+  const ratio = eleccion.ratio;
 
   const { data: viejas, error: errViejas } = await sb
     .from('requerimientos')
@@ -1148,9 +1259,6 @@ async function reemplazarMaterial(numero, rubro, codigoViejo) {
     alert(`El pedido ${numero} ya tiene el material ${codigoNuevo} en la misma línea (rgln). No se hizo ningún cambio para no pisarlo.`);
     return;
   }
-
-  const totalViejo = viejas.reduce((a, v) => a + Number(v.cantidad_requerida), 0);
-  if (!confirm(`Pedido ${numero}: dejar de pedir "${viejo ? viejo.nombre : codigoViejo}" (${redondear2(totalViejo)}) y pedir "${nuevo.nombre}" (${redondear2(totalViejo * ratio)}).\n\nEl nuevo descuenta de su propio stock. Si no alcanza, queda pendiente el nuevo. ¿Confirmás?`)) return;
 
   const filasNuevas = viejas.map(v => ({
     pedido_numero: numero,
@@ -1175,6 +1283,38 @@ async function reemplazarMaterial(numero, rubro, codigoViejo) {
     alert('No se pudo cerrar el material original, se deshizo el cambio: ' + errCierre.message);
     return;
   }
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// IGNORAR UN MATERIAL EN UN PEDIDO (no se envía a propósito, o no hace
+// falta): deja de contar como faltante y de competir por stock. El pedido
+// no se cierra; solo ese material. Se puede deshacer desde el filtro
+// "Despachados / cerrados" con "Dejar de ignorar".
+// ---------------------------------------------------------------------
+async function ignorarMaterial(numero, rubro, codigo) {
+  const mat = materialesCache.find(m => m.codigo === codigo && m.rubro === rubro);
+  if (!confirm(`¿Ignorar "${mat ? mat.nombre : codigo}" en el pedido ${numero}? Deja de contar como faltante (no se envía o no hace falta).`)) return;
+  const { error } = await sb
+    .from('requerimientos')
+    .update({ activo: false, ignorado: true })
+    .eq('pedido_numero', numero)
+    .eq('material_codigo', codigo)
+    .eq('material_rubro', rubro)
+    .eq('activo', true);
+  if (error) { alert('No se pudo ignorar el material: ' + error.message); return; }
+  await cargarTodo();
+}
+
+async function restaurarIgnorado(numero, rubro, codigo) {
+  const { error } = await sb
+    .from('requerimientos')
+    .update({ activo: true, ignorado: false })
+    .eq('pedido_numero', numero)
+    .eq('material_codigo', codigo)
+    .eq('material_rubro', rubro)
+    .eq('ignorado', true);
+  if (error) { alert('No se pudo restaurar el material: ' + error.message); return; }
   await cargarTodo();
 }
 
