@@ -240,6 +240,9 @@
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Despachados / cerrados</option>
         </select>
+        <select id="proveedor-herraje" onchange="renderizarPedidos('herraje')" title="Ver solo lo de un proveedor">
+          <option value="">Todos los proveedores</option>
+        </select>
         <select id="vista-herraje" onchange="renderizarPedidos('herraje')">
           <option value="pedido">Ver por pedido</option>
           <option value="material">Ver por material</option>
@@ -271,6 +274,9 @@
           <option value="en_produccion" selected>En producción</option>
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Despachados / cerrados</option>
+        </select>
+        <select id="proveedor-insumo" onchange="renderizarPedidos('insumo')" title="Ver solo lo de un proveedor">
+          <option value="">Todos los proveedores</option>
         </select>
         <select id="vista-insumo" onchange="renderizarPedidos('insumo')">
           <option value="pedido">Ver por pedido</option>
@@ -703,6 +709,8 @@ async function cargarTodo() {
   const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo'));
   if (mats) materialesCache = mats;
 
+  poblarProveedores('herraje');
+  poblarProveedores('insumo');
   renderizarPedidos('herraje');
   renderizarPedidos('insumo');
   cargarUltimaImportacion();
@@ -746,6 +754,39 @@ function pasaFiltroFecha(rubro, fechaIngreso, fechaPactada, fechaSalida) {
   return true;
 }
 
+// Menú de proveedores: se arma con los proveedores que figuran en los
+// pedidos de ese rubro (pendientes y cerrados) y conserva la selección
+// actual al recargar.
+function poblarProveedores(rubro) {
+  const sel = document.getElementById('proveedor-' + rubro);
+  const actual = sel.value;
+  const nombres = new Set();
+  let haySinProveedor = false;
+  [...datosPendientes[rubro], ...datosCerrados[rubro]].forEach(f => {
+    if (f.proveedor) nombres.add(f.proveedor); else haySinProveedor = true;
+  });
+  const ordenados = Array.from(nombres).sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = '<option value="">Todos los proveedores</option>';
+  ordenados.forEach(n => {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    sel.appendChild(o);
+  });
+  if (haySinProveedor) {
+    const o = document.createElement('option');
+    o.value = '__sin__'; o.textContent = '(sin proveedor)';
+    sel.appendChild(o);
+  }
+  sel.value = Array.from(sel.options).some(o => o.value === actual) ? actual : '';
+}
+
+function filtrarPorProveedor(rubro, filas) {
+  const elegido = document.getElementById('proveedor-' + rubro).value;
+  if (!elegido) return filas;
+  if (elegido === '__sin__') return filas.filter(f => !f.proveedor);
+  return filas.filter(f => f.proveedor === elegido);
+}
+
 function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
@@ -766,7 +807,7 @@ function renderizarPorPedido(rubro) {
   tbody.innerHTML = '';
 
   const esVistaCerrados = filtroEstado === 'cerrado_manual';
-  const fuente = esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro];
+  const fuente = filtrarPorProveedor(rubro, esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro]);
 
   // agrupar por pedido
   const porPedido = {};
@@ -929,7 +970,7 @@ function renderizarPorMaterial(rubro) {
   tbody.innerHTML = '';
 
   const esVistaCerrados = filtroEstado === 'cerrado_manual';
-  const fuente = esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro];
+  const fuente = filtrarPorProveedor(rubro, esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro]);
 
   const porMaterial = {};
   fuente.forEach(fila => {
