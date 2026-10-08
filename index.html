@@ -236,7 +236,7 @@
         <input type="text" id="filtro-herraje" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('herraje')">
         <select id="estado-herraje" onchange="renderizarPedidos('herraje')">
           <option value="todos">Todos los estados</option>
-          <option value="en_produccion">En producción</option>
+          <option value="en_produccion" selected>En producción</option>
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Cerrados manualmente</option>
         </select>
@@ -251,7 +251,7 @@
         <select id="filtro-campo-fecha-herraje" onchange="renderizarPedidos('herraje')" title="Qué fecha usar para el rango de abajo">
           <option value="fecha_pactada">F. pactada</option>
           <option value="fecha_ingreso">F. ingreso</option>
-          <option value="fecha_salida">F. salida</option>
+          <option value="fecha_salida" selected>F. salida</option>
         </select>
         <input type="date" id="filtro-fecha-desde-herraje" onchange="renderizarPedidos('herraje')" title="Desde">
         <input type="date" id="filtro-fecha-hasta-herraje" onchange="renderizarPedidos('herraje')" title="Hasta">
@@ -269,7 +269,7 @@
         <input type="text" id="filtro-insumo" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('insumo')">
         <select id="estado-insumo" onchange="renderizarPedidos('insumo')">
           <option value="todos">Todos los estados</option>
-          <option value="en_produccion">En producción</option>
+          <option value="en_produccion" selected>En producción</option>
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Cerrados manualmente</option>
         </select>
@@ -284,7 +284,7 @@
         <select id="filtro-campo-fecha-insumo" onchange="renderizarPedidos('insumo')" title="Qué fecha usar para el rango de abajo">
           <option value="fecha_pactada">F. pactada</option>
           <option value="fecha_ingreso">F. ingreso</option>
-          <option value="fecha_salida">F. salida</option>
+          <option value="fecha_salida" selected>F. salida</option>
         </select>
         <input type="date" id="filtro-fecha-desde-insumo" onchange="renderizarPedidos('insumo')" title="Desde">
         <input type="date" id="filtro-fecha-hasta-insumo" onchange="renderizarPedidos('insumo')" title="Hasta">
@@ -710,6 +710,13 @@ function redondear2(n) {
 // select "filtro-campo-fecha-<rubro>". Si el pedido no tiene cargada esa
 // fecha y hay un rango puesto, lo deja afuera (para no mezclar "sin dato"
 // con "dentro del rango").
+// Despachado = fecha de salida estrictamente anterior a hoy (si sale hoy,
+// todavía no se considera despachado).
+function estadoEfectivo(estadoStock, fechaSalida) {
+  if (fechaSalida && fechaSalida < fechaLocalISO(new Date())) return 'entregado';
+  return estadoStock;
+}
+
 function pasaFiltroFecha(rubro, fechaIngreso, fechaPactada, fechaSalida) {
   const desde = document.getElementById('filtro-fecha-desde-' + rubro).value;
   const hasta = document.getElementById('filtro-fecha-hasta-' + rubro).value;
@@ -754,18 +761,27 @@ function renderizarPorPedido(rubro) {
   const pedidosOrdenados = Object.keys(porPedido)
     .map(n => parseInt(n))
     .sort((a, b) => {
-      const fa = porPedido[a][0].fecha_pactada || '';
-      const fb = porPedido[b][0].fecha_pactada || '';
-      return fa.localeCompare(fb);
+      // Orden ascendente (más viejo primero) por la fecha elegida en el
+      // selector (por defecto F. salida); los que no tienen esa fecha van al
+      // final; el empate se resuelve por número de pedido.
+      const campoOrden = document.getElementById('filtro-campo-fecha-' + rubro).value;
+      const fa = porPedido[a][0][campoOrden] || '';
+      const fb = porPedido[b][0][campoOrden] || '';
+      if (fa && !fb) return -1;
+      if (!fa && fb) return 1;
+      return fa.localeCompare(fb) || (a - b);
     });
 
   pedidosOrdenados.forEach(numero => {
     const materiales = porPedido[numero];
-    const estado = estadosPedidos[numero] || { estado: 'en_produccion', materiales_pendientes: '?', materiales_totales: '?' };
+    const estadoBase = estadosPedidos[numero] || { estado: 'en_produccion', materiales_pendientes: '?', materiales_totales: '?' };
     const cliente = materiales[0].cliente || '';
     const fecha = materiales[0].fecha_pactada || '';
     const fechaIngreso = materiales[0].fecha_ingreso || '';
     const fechaSalida = materiales[0].fecha_salida || '';
+    // Fecha de salida anterior a hoy = ya se despachó: figura siempre como
+    // entregado, sin importar si el stock llegó a cubrir todo.
+    const estado = { ...estadoBase, estado: estadoEfectivo(estadoBase.estado, fechaSalida) };
 
     const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
     if (filtroTexto && !textoBusqueda.includes(filtroTexto)) return;
@@ -891,7 +907,8 @@ function renderizarPorMaterial(rubro) {
 
   const porMaterial = {};
   fuente.forEach(fila => {
-    const estadoPedido = estadosPedidos[fila.pedido_numero] || { estado: 'en_produccion' };
+    const estadoBasePedido = estadosPedidos[fila.pedido_numero] || { estado: 'en_produccion' };
+    const estadoPedido = { ...estadoBasePedido, estado: estadoEfectivo(estadoBasePedido.estado, fila.fecha_salida) };
     if (!esVistaCerrados && filtroEstado !== 'todos' && estadoPedido.estado !== filtroEstado) return;
 
     if (!porMaterial[fila.material_codigo]) {
