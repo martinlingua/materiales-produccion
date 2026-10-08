@@ -260,6 +260,10 @@
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('herraje')">
           Pedidos de la semana
         </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="imprimirFaltantes('herraje')"
+                title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
+          Imprimir / PDF
+        </button>
       </div>
       <table class="pedidos"><thead id="thead-herraje">
         <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
@@ -294,6 +298,10 @@
         <input type="date" id="filtro-fecha-hasta-insumo" onchange="renderizarPedidos('insumo')" title="Hasta">
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('insumo')">
           Pedidos de la semana
+        </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="imprimirFaltantes('insumo')"
+                title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
+          Imprimir / PDF
         </button>
       </div>
       <table class="pedidos"><thead id="thead-insumo">
@@ -1357,6 +1365,125 @@ async function restaurarIgnorado(numero, rubro, codigo) {
     .eq('ignorado', true);
   if (error) { alert('No se pudo restaurar el material: ' + error.message); return; }
   await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// IMPRIMIR / PDF: lista de lo que FALTA, con los filtros puestos en pantalla
+// (proveedor, búsqueda, fechas, estado). Agrupa por proveedor y por
+// material, con los pedidos afectados. En el diálogo de impresión se puede
+// elegir "Guardar como PDF".
+// ---------------------------------------------------------------------
+function escaparHTML(t) {
+  return String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function formatearFechaCorta(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
+  const porProveedor = {};
+  filas.forEach(f => {
+    const prov = f.proveedor || '(sin proveedor)';
+    if (!porProveedor[prov]) porProveedor[prov] = {};
+    const g = porProveedor[prov];
+    if (!g[f.material_codigo]) g[f.material_codigo] = { nombre: f.material_nombre, umed: f.umed, faltante: 0, pedidos: {} };
+    g[f.material_codigo].faltante += Number(f.pendiente);
+    const ped = g[f.material_codigo].pedidos;
+    if (!ped[f.pedido_numero]) ped[f.pedido_numero] = { cant: 0, salida: f.fecha_salida };
+    ped[f.pedido_numero].cant += Number(f.pendiente);
+  });
+
+  const nombreRubro = rubro === 'herraje' ? 'Herrajes' : 'Insumos';
+  let totalMateriales = 0;
+  const secciones = Object.keys(porProveedor).sort((a, b) => a.localeCompare(b)).map(prov => {
+    const mats = Object.entries(porProveedor[prov]).sort((a, b) => (a[1].nombre || '').localeCompare(b[1].nombre || ''));
+    totalMateriales += mats.length;
+    const filasHTML = mats.map(([codigo, m]) => {
+      const pedidos = Object.entries(m.pedidos)
+        .sort((a, b) => (a[1].salida || '9999').localeCompare(b[1].salida || '9999') || (a[0] - b[0]))
+        .map(([n, p]) => `${n} (${redondear2(p.cant)})`).join(', ');
+      return `<tr>
+        <td class="chk"></td>
+        <td>${escaparHTML(codigo)}</td>
+        <td>${escaparHTML(m.nombre)}</td>
+        <td class="num">${redondear2(m.faltante)} ${escaparHTML(m.umed || '')}</td>
+        <td class="ped">${escaparHTML(pedidos)}</td>
+      </tr>`;
+    }).join('');
+    return `<h2>${escaparHTML(prov)} <span>(${mats.length} material${mats.length === 1 ? '' : 'es'})</span></h2>
+      <table><thead><tr><th class="chk"></th><th>Código</th><th>Material</th><th>Falta</th><th>Pedidos (cantidad)</th></tr></thead>
+      <tbody>${filasHTML}</tbody></table>`;
+  }).join('');
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Faltantes ${nombreRubro}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #222; }
+    h1 { font-size: 18px; margin: 0 0 2px; border-bottom: 3px solid #FFCC03; padding-bottom: 4px; }
+    .sub { color: #555; margin: 4px 0 10px; }
+    h2 { font-size: 13px; margin: 14px 0 4px; background: #f0efe9; padding: 4px 6px; page-break-after: avoid; }
+    h2 span { font-weight: normal; color: #666; font-size: 11px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+    th, td { border: 1px solid #bbb; padding: 3px 5px; text-align: left; vertical-align: top; }
+    th { background: #f7f6f3; }
+    tr { page-break-inside: avoid; }
+    td.num { text-align: right; white-space: nowrap; font-weight: bold; }
+    td.ped { font-size: 10px; color: #444; }
+    table { table-layout: fixed; }
+    th.chk, td.chk { width: 16px; }
+    th:nth-child(2) { width: 52px; }
+    th:nth-child(4) { width: 80px; }
+    th:nth-child(5) { width: 30%; }
+    .vacio { margin-top: 20px; color: #666; }
+  </style></head><body>
+  <h1>Lista de faltantes — ${nombreRubro}</h1>
+  <div class="sub">${escaparHTML(descripcionFiltros)} · Impreso el ${new Date().toLocaleDateString('es-AR')} · ${totalMateriales} material${totalMateriales === 1 ? '' : 'es'} en total</div>
+  ${secciones || '<div class="vacio">No hay faltantes con los filtros elegidos.</div>'}
+  </body></html>`;
+}
+
+function imprimirFaltantes(rubro) {
+  const filtroEstado = document.getElementById('estado-' + rubro).value;
+  if (filtroEstado === 'cerrado_manual') {
+    alert('La lista de faltantes se arma con los pedidos activos. Elegí "En producción" o "Todos los estados" y probá de nuevo.');
+    return;
+  }
+  const filtroTexto = (document.getElementById('filtro-' + rubro).value || '').toLowerCase();
+  const filas = filtrarPorProveedor(rubro, datosPendientes[rubro]).filter(f => {
+    if (!(Number(f.pendiente) > 0)) return false;
+    const base = estadosPedidos[f.pedido_numero] || { estado: 'en_produccion' };
+    if (filtroEstado !== 'todos' && estadoEfectivo(base.estado, f.fecha_salida) !== filtroEstado) return false;
+    if (!pasaFiltroFecha(rubro, f.fecha_ingreso, f.fecha_pactada, f.fecha_salida)) return false;
+    if (filtroTexto && !(f.pedido_numero + ' ' + (f.cliente || '') + ' ' + f.material_codigo + ' ' + (f.material_nombre || '')).toLowerCase().includes(filtroTexto)) return false;
+    return true;
+  });
+
+  const selProv = document.getElementById('proveedor-' + rubro);
+  const partes = [`Proveedor: ${selProv.value ? selProv.options[selProv.selectedIndex].text : 'todos'}`];
+  const estadoTxt = { en_produccion: 'en producción', entregado: 'entregados', todos: 'todos' }[filtroEstado] || filtroEstado;
+  partes.push(`Pedidos: ${estadoTxt}`);
+  const desde = document.getElementById('filtro-fecha-desde-' + rubro).value;
+  const hasta = document.getElementById('filtro-fecha-hasta-' + rubro).value;
+  if (desde || hasta) {
+    const campo = document.getElementById('filtro-campo-fecha-' + rubro);
+    partes.push(`${campo.options[campo.selectedIndex].text}: ${desde ? 'desde ' + formatearFechaCorta(desde) : ''}${desde && hasta ? ' ' : ''}${hasta ? 'hasta ' + formatearFechaCorta(hasta) : ''}`);
+  }
+  if (filtroTexto) partes.push(`Búsqueda: "${filtroTexto}"`);
+
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(iframe);
+  iframe.contentDocument.open();
+  iframe.contentDocument.write(armarHTMLFaltantes(rubro, filas, partes.join(' · ')));
+  iframe.contentDocument.close();
+  setTimeout(() => {
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    setTimeout(() => iframe.remove(), 60000);
+  }, 250);
 }
 
 // ---------------------------------------------------------------------
