@@ -236,7 +236,8 @@
         <input type="text" id="filtro-herraje" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('herraje')">
         <select id="estado-herraje" onchange="renderizarPedidos('herraje')">
           <option value="todos">Todos los estados</option>
-          <option value="en_produccion" selected>En producción</option>
+          <option value="semana" selected>En producción + despachados esta semana</option>
+          <option value="en_produccion">Solo en producción</option>
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Despachados / cerrados</option>
         </select>
@@ -275,7 +276,8 @@
         <input type="text" id="filtro-insumo" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('insumo')">
         <select id="estado-insumo" onchange="renderizarPedidos('insumo')">
           <option value="todos">Todos los estados</option>
-          <option value="en_produccion" selected>En producción</option>
+          <option value="semana" selected>En producción + despachados esta semana</option>
+          <option value="en_produccion">Solo en producción</option>
           <option value="entregado">Entregados</option>
           <option value="cerrado_manual">Despachados / cerrados</option>
         </select>
@@ -742,6 +744,41 @@ function esDespachado(fechaSalida) {
   return !!fechaSalida && fechaSalida < fechaLocalISO(new Date());
 }
 
+// Lunes de la semana actual (fecha local, AAAA-MM-DD).
+function inicioSemanaISO() {
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return fechaLocalISO(d);
+}
+
+// Qué filas mostrar según el filtro de estado:
+//  - "Despachados / cerrados": todo lo cerrado (histórico completo).
+//  - "Solo en producción": solo lo pendiente que sigue en fábrica.
+//  - "En producción + despachados esta semana" (por defecto): lo anterior más
+//    los pedidos que salieron del lunes de esta semana en adelante, aunque
+//    ya estén cerrados, para poder consultarlos.
+//  - "Todos" / "Entregados": pendientes + despachados de esta semana.
+// Las filas que vienen de requerimientos cerrados llevan _cerrado = true.
+function fuenteDeVista(rubro, filtroEstado) {
+  if (filtroEstado === 'cerrado_manual') {
+    return datosCerrados[rubro].map(f => ({ ...f, _cerrado: true }));
+  }
+  const lunes = inicioSemanaISO();
+  let pend = datosPendientes[rubro];
+  if (filtroEstado === 'semana') {
+    pend = pend.filter(f => {
+      const base = estadosPedidos[f.pedido_numero] || { estado: 'en_produccion' };
+      return estadoEfectivo(base.estado, f.fecha_salida) === 'en_produccion'
+        || (esDespachado(f.fecha_salida) && f.fecha_salida >= lunes);
+    });
+  }
+  if (filtroEstado === 'en_produccion') return pend;
+  const cerradosSemana = datosCerrados[rubro]
+    .filter(f => esDespachado(f.fecha_salida) && f.fecha_salida >= lunes)
+    .map(f => ({ ...f, _cerrado: true }));
+  return [...pend, ...cerradosSemana];
+}
+
 function puedeEscribir() {
   return !!perfilActual && (perfilActual.rol === 'comprador' || perfilActual.rol === 'deposito');
 }
@@ -815,7 +852,7 @@ function renderizarPorPedido(rubro) {
   tbody.innerHTML = '';
 
   const esVistaCerrados = filtroEstado === 'cerrado_manual';
-  const fuente = filtrarPorProveedor(rubro, esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro]);
+  const fuente = filtrarPorProveedor(rubro, fuenteDeVista(rubro, filtroEstado));
 
   // agrupar por pedido
   const porPedido = {};
@@ -835,7 +872,7 @@ function renderizarPorPedido(rubro) {
       const fb = porPedido[b][0][campoOrden] || '';
       if (fa && !fb) return -1;
       if (!fa && fb) return 1;
-      return fa.localeCompare(fb) || (a - b);
+      return esVistaCerrados ? (fb.localeCompare(fa) || (b - a)) : (fa.localeCompare(fb) || (a - b));
     });
 
   pedidosOrdenados.forEach(numero => {
@@ -848,11 +885,12 @@ function renderizarPorPedido(rubro) {
     // Fecha de salida anterior a hoy = ya se despachó: figura siempre como
     // entregado, sin importar si el stock llegó a cubrir todo.
     const estado = { ...estadoBase, estado: estadoEfectivo(estadoBase.estado, fechaSalida) };
+    const pedidoCerrado = materiales.every(m => m._cerrado);
 
     const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
     if (filtroTexto && !textoBusqueda.includes(filtroTexto)) return;
-    if (!esVistaCerrados && filtroEstado !== 'todos' && estado.estado !== filtroEstado) return;
-    if (!esVistaCerrados && ocultarCubierto && estado.estado === 'entregado') return;
+    if (!pedidoCerrado && filtroEstado !== 'todos' && filtroEstado !== 'semana' && estado.estado !== filtroEstado) return;
+    if (!pedidoCerrado && ocultarCubierto && estado.estado === 'entregado') return;
     if (!pasaFiltroFecha(rubro, fechaIngreso, fecha, fechaSalida)) return;
 
     // Agrupar por material (el mismo material puede pedirse en varias
@@ -886,14 +924,14 @@ function renderizarPorPedido(rubro) {
     };
     trPedido.innerHTML = `
       <td onclick="event.stopPropagation()">
-        ${esVistaCerrados ? '' : `<input type="checkbox" class="chk-semana-${rubro}" value="${numero}" onclick="event.stopPropagation()">`}
+        ${pedidoCerrado ? '' : `<input type="checkbox" class="chk-semana-${rubro}" value="${numero}" onclick="event.stopPropagation()">`}
       </td>
       <td><strong>${numero}</strong></td>
       <td>${cliente}</td>
       <td>${fechaSalida || '<span style="color:var(--gris-claro);">—</span>'}</td>
-      <td>${esVistaCerrados ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
+      <td>${pedidoCerrado ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
-        ${esVistaCerrados
+        ${pedidoCerrado
           ? (esDespachado(fechaSalida)
               ? '<span class="chip entregado">Entregado</span>'
               : '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>')
@@ -910,7 +948,7 @@ function renderizarPorPedido(rubro) {
     trDetalle.style.display = 'none';
 
     const filasMat = Object.entries(porMaterial)
-      .filter(([, m]) => !ocultarCubierto || m.pendiente > 0)
+      .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
       .map(([codigo, m]) => `
       <tr>
         <td>${codigo}</td>
@@ -918,7 +956,7 @@ function renderizarPorPedido(rubro) {
         <td>${redondear2(m.requerido)}</td>
         <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(m.pendiente)}</td>
         <td>${m.proveedor || ''}</td>
-        <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (esVistaCerrados
+        <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (pedidoCerrado
           ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
                     onclick="event.stopPropagation(); restaurarIgnorado(${numero}, '${rubro}', ${codigo})"
                     title="Vuelve a pedir este material en el pedido">Dejar de ignorar</button>` : '')
@@ -931,7 +969,7 @@ function renderizarPorPedido(rubro) {
       </tr>
     `).join('');
 
-    const botones = esVistaCerrados
+    const botones = pedidoCerrado
       ? `<button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px;"
                  onclick="event.stopPropagation(); reabrirPedido(${numero}, '${rubro}')">
            Reabrir pedido
@@ -978,13 +1016,13 @@ function renderizarPorMaterial(rubro) {
   tbody.innerHTML = '';
 
   const esVistaCerrados = filtroEstado === 'cerrado_manual';
-  const fuente = filtrarPorProveedor(rubro, esVistaCerrados ? datosCerrados[rubro] : datosPendientes[rubro]);
+  const fuente = filtrarPorProveedor(rubro, fuenteDeVista(rubro, filtroEstado));
 
   const porMaterial = {};
   fuente.forEach(fila => {
     const estadoBasePedido = estadosPedidos[fila.pedido_numero] || { estado: 'en_produccion' };
     const estadoPedido = { ...estadoBasePedido, estado: estadoEfectivo(estadoBasePedido.estado, fila.fecha_salida) };
-    if (!esVistaCerrados && filtroEstado !== 'todos' && estadoPedido.estado !== filtroEstado) return;
+    if (!fila._cerrado && filtroEstado !== 'todos' && filtroEstado !== 'semana' && estadoPedido.estado !== filtroEstado) return;
 
     if (!porMaterial[fila.material_codigo]) {
       porMaterial[fila.material_codigo] = {
@@ -1001,6 +1039,7 @@ function renderizarPorMaterial(rubro) {
         fecha_ingreso: fila.fecha_ingreso,
         fecha_salida: fila.fecha_salida,
         estado: estadoPedido.estado,
+        cerrado: !!fila._cerrado,
         requerido: 0,
         pendiente: 0,
         prioridad: false,
@@ -1022,7 +1061,7 @@ function renderizarPorMaterial(rubro) {
   codigosOrdenados.forEach(codigo => {
     const g = porMaterial[codigo];
     const pedidosDelMaterial = Object.entries(g.pedidos)
-      .filter(([, p]) => (!ocultarCubierto || p.pendiente > 0) && pasaFiltroFecha(rubro, p.fecha_ingreso, p.fecha_pactada, p.fecha_salida));
+      .filter(([, p]) => (p.cerrado || !ocultarCubierto || p.pendiente > 0) && pasaFiltroFecha(rubro, p.fecha_ingreso, p.fecha_pactada, p.fecha_salida));
     if (pedidosDelMaterial.length === 0) return;
     const pendienteTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.pendiente, 0);
 
@@ -1051,13 +1090,13 @@ function renderizarPorMaterial(rubro) {
           <td>${redondear2(p.requerido)}</td>
           <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
           <td>
-            ${esVistaCerrados
+            ${p.cerrado
               ? (esDespachado(p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
               : `${p.estado === 'entregado' ? 'Entregado' : 'En producción'}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
             }
           </td>
           <td>
-            ${esVistaCerrados ? '' : `
+            ${p.cerrado ? '' : `
               <button class="primario" style="font-size:11px; padding:4px 8px;"
                       onclick="event.stopPropagation(); priorizarPedido(${numero}, '${rubro}', ${p.prioridad})"
                       title="Prioriza este pedido en herrajes e insumos a la vez">
@@ -1455,7 +1494,8 @@ function imprimirFaltantes(rubro) {
   const filas = filtrarPorProveedor(rubro, datosPendientes[rubro]).filter(f => {
     if (!(Number(f.pendiente) > 0)) return false;
     const base = estadosPedidos[f.pedido_numero] || { estado: 'en_produccion' };
-    if (filtroEstado !== 'todos' && estadoEfectivo(base.estado, f.fecha_salida) !== filtroEstado) return false;
+    const ef = estadoEfectivo(base.estado, f.fecha_salida);
+    if (filtroEstado === 'semana' ? ef !== 'en_produccion' : (filtroEstado !== 'todos' && ef !== filtroEstado)) return false;
     if (!pasaFiltroFecha(rubro, f.fecha_ingreso, f.fecha_pactada, f.fecha_salida)) return false;
     if (filtroTexto && !(f.pedido_numero + ' ' + (f.cliente || '') + ' ' + f.material_codigo + ' ' + (f.material_nombre || '')).toLowerCase().includes(filtroTexto)) return false;
     return true;
@@ -1463,7 +1503,7 @@ function imprimirFaltantes(rubro) {
 
   const selProv = document.getElementById('proveedor-' + rubro);
   const partes = [`Proveedor: ${selProv.value ? selProv.options[selProv.selectedIndex].text : 'todos'}`];
-  const estadoTxt = { en_produccion: 'en producción', entregado: 'entregados', todos: 'todos' }[filtroEstado] || filtroEstado;
+  const estadoTxt = { semana: 'en producción', en_produccion: 'en producción', entregado: 'entregados', todos: 'todos' }[filtroEstado] || filtroEstado;
   partes.push(`Pedidos: ${estadoTxt}`);
   const desde = document.getElementById('filtro-fecha-desde-' + rubro).value;
   const hasta = document.getElementById('filtro-fecha-hasta-' + rubro).value;
