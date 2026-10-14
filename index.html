@@ -430,6 +430,33 @@
         </div>
         <div id="stock-aviso"></div>
       </div>
+
+      <div class="panel">
+        <h2>Actualizar el stock de un material puntual</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Elegí un herraje o insumo y cargá lo que hay hoy en fábrica. Reemplaza el conteo de ESE material
+          solamente (no se suma al anterior) y no toca el resto. Si el material tiene factor de conversión,
+          ingresás la cantidad en la unidad en que se cuenta y el sistema la convierte.
+        </p>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="stockman-rubro" onchange="stockManualLimpiarSeleccion()">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Material
+            <input type="text" id="stockman-busqueda" placeholder="Código o nombre..." oninput="stockManualBuscar()" autocomplete="off">
+          </label>
+          <label id="stockman-cantidad-label">Cantidad en fábrica
+            <input type="number" id="stockman-cantidad" min="0" step="0.01" oninput="stockManualPrevia()">
+          </label>
+          <button class="primario" onclick="guardarStockManual()">Guardar stock</button>
+        </div>
+        <div id="stockman-sugerencias" style="font-size:12px; color:var(--gris-claro); max-height:120px; overflow:auto;"></div>
+        <div id="stockman-previa" style="font-size:13px; color:var(--gris-oscuro); font-weight:500;"></div>
+        <div id="stockman-aviso"></div>
+      </div>
     </section>
 
     <!-- CATALOGO / FACTORES DE CONVERSION -->
@@ -2425,6 +2452,114 @@ async function importarStockFisico() {
   }
   aviso.innerHTML = mensaje;
   input.value = '';
+  await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// STOCK FÍSICO MANUAL (un material puntual, sin subir la planilla)
+// Inserta una fila en conteos_stock igual que la importación; como
+// v_ultimo_conteo toma el último conteo de cada material, esto reemplaza
+// solo el de ese material y deja intacto el resto.
+// ---------------------------------------------------------------------
+let stockManualMaterial = null;
+
+function stockManualLimpiarSeleccion() {
+  stockManualMaterial = null;
+  document.getElementById('stockman-busqueda').value = '';
+  document.getElementById('stockman-sugerencias').innerHTML = '';
+  stockManualActualizarUnidad();
+}
+
+function stockManualBuscar() {
+  stockManualMaterial = null;
+  const rubro = document.getElementById('stockman-rubro').value;
+  const q = document.getElementById('stockman-busqueda').value.toLowerCase();
+  const cont = document.getElementById('stockman-sugerencias');
+  stockManualActualizarUnidad();
+  if (!q) { cont.innerHTML = ''; return; }
+  const coincidencias = materialesCache
+    .filter(m => m.rubro === rubro)
+    .filter(m => String(m.codigo).includes(q) || (m.nombre || '').toLowerCase().includes(q))
+    .slice(0, 8);
+  cont.innerHTML = coincidencias.map(m =>
+    `<div style="cursor:pointer; padding:3px 0;" onclick='stockManualElegir(${JSON.stringify(m).replace(/'/g, "&#39;")})'>
+      ${m.codigo} — ${m.nombre} (${m.proveedor || 'sin proveedor'})
+    </div>`
+  ).join('') || '<div>Sin coincidencias</div>';
+}
+
+function stockManualElegir(material) {
+  stockManualMaterial = material;
+  document.getElementById('stockman-busqueda').value = `${material.codigo} — ${material.nombre}`;
+  document.getElementById('stockman-sugerencias').innerHTML = '';
+  stockManualActualizarUnidad();
+}
+
+function stockManualActualizarUnidad() {
+  const label = document.getElementById('stockman-cantidad-label');
+  const valorPrevio = document.getElementById('stockman-cantidad').value;
+  const m = stockManualMaterial;
+  const unidad = m && m.unidad_conteo && Number(m.factor_conversion) !== 1
+    ? `en <strong>${m.unidad_conteo}</strong>`
+    : (m && m.umed ? `en ${m.umed}` : '');
+  label.innerHTML = `Cantidad en fábrica${unidad ? ` (${unidad})` : ''}
+    <input type="number" id="stockman-cantidad" min="0" step="0.01" oninput="stockManualPrevia()" value="${valorPrevio}">`;
+  stockManualPrevia();
+}
+
+function stockManualPrevia() {
+  const previa = document.getElementById('stockman-previa');
+  const m = stockManualMaterial;
+  if (!m) { previa.textContent = ''; return; }
+  const actual = stockActual[m.rubro] ? stockActual[m.rubro][m.codigo] : undefined;
+  const partes = [`Stock actual en el sistema: ${actual === undefined ? 'sin conteo cargado' : redondear2(actual) + ' ' + (m.umed || '')}`];
+  const cantidad = parseFloat(document.getElementById('stockman-cantidad').value);
+  const factor = Number(m.factor_conversion) || 1;
+  if (Number.isFinite(cantidad) && cantidad >= 0 && factor !== 1) {
+    partes.push(`Se va a guardar: ${redondear2(cantidad * factor)} ${m.umed || ''}`);
+  }
+  previa.textContent = partes.join(' · ');
+}
+
+async function guardarStockManual() {
+  const aviso = document.getElementById('stockman-aviso');
+  aviso.innerHTML = '';
+  if (!puedeEscribir()) {
+    aviso.innerHTML = '<div class="aviso error">Tu usuario no tiene permiso para cargar stock.</div>';
+    return;
+  }
+  const m = stockManualMaterial;
+  if (!m) {
+    aviso.innerHTML = '<div class="aviso error">Elegí un material de la lista de sugerencias.</div>';
+    return;
+  }
+  const cantidadContada = parseFloat(document.getElementById('stockman-cantidad').value);
+  if (!Number.isFinite(cantidadContada) || cantidadContada < 0) {
+    aviso.innerHTML = '<div class="aviso error">Ingresá una cantidad de 0 o más.</div>';
+    return;
+  }
+  const factor = Number(m.factor_conversion) || 1;
+  const cantidad = cantidadContada * factor;
+
+  const { error } = await sb.from('conteos_stock').insert({
+    material_codigo: m.codigo,
+    material_rubro: m.rubro,
+    cantidad_contada: cantidadContada,
+    factor_aplicado: factor,
+    cantidad,
+    usuario_id: perfilActual.id,
+    archivo: 'carga manual',
+  });
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo guardar: ${error.message}</div>`;
+    return;
+  }
+
+  aviso.innerHTML = `<div class="aviso ok">Stock actualizado: ${m.codigo} — ${m.nombre} = ${redondear2(cantidad)} ${m.umed || ''}${factor !== 1 ? ` (${redondear2(cantidadContada)} ${m.unidad_conteo || ''})` : ''}.</div>`;
+  stockManualMaterial = null;
+  document.getElementById('stockman-busqueda').value = '';
+  document.getElementById('stockman-cantidad').value = '';
+  stockManualActualizarUnidad();
   await cargarTodo();
 }
 
