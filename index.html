@@ -248,6 +248,11 @@
           <option value="pedido">Ver por pedido</option>
           <option value="material">Ver por material</option>
         </select>
+        <select id="orden-mat-herraje" onchange="renderizarPedidos('herraje')" title="Cómo ordenar los materiales dentro de cada pedido">
+          <option value="codigo">Materiales por código</option>
+          <option value="alfabetico">Materiales A-Z</option>
+          <option value="proveedor">Materiales por proveedor</option>
+        </select>
         <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
           <input type="checkbox" id="ocultar-cubierto-herraje" onchange="renderizarPedidos('herraje')">
           Ocultar lo ya cubierto
@@ -287,6 +292,11 @@
         <select id="vista-insumo" onchange="renderizarPedidos('insumo')">
           <option value="pedido">Ver por pedido</option>
           <option value="material">Ver por material</option>
+        </select>
+        <select id="orden-mat-insumo" onchange="renderizarPedidos('insumo')" title="Cómo ordenar los materiales dentro de cada pedido">
+          <option value="codigo">Materiales por código</option>
+          <option value="alfabetico">Materiales A-Z</option>
+          <option value="proveedor">Materiales por proveedor</option>
         </select>
         <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
           <input type="checkbox" id="ocultar-cubierto-insumo" onchange="renderizarPedidos('insumo')">
@@ -1067,8 +1077,22 @@ function renderizarPorPedido(rubro) {
     trDetalle.id = 'det-' + rubro + '-' + numero;
     trDetalle.style.display = 'none';
 
+    // Orden de los materiales dentro del pedido (selector "Materiales ...").
+    // Sin proveedor va al final; el empate se resuelve por nombre y código.
+    const ordenMateriales = document.getElementById('orden-mat-' + rubro).value;
+    const comparaNombre = (a, b) => (a[1].nombre || '').localeCompare(b[1].nombre || '', 'es', { sensitivity: 'base' });
     const filasMat = Object.entries(porMaterial)
       .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
+      .sort((a, b) => {
+        if (ordenMateriales === 'alfabetico') return comparaNombre(a, b) || (Number(a[0]) - Number(b[0]));
+        if (ordenMateriales === 'proveedor') {
+          const pa = a[1].proveedor || '', pb = b[1].proveedor || '';
+          if (pa && !pb) return -1;
+          if (!pa && pb) return 1;
+          return pa.localeCompare(pb, 'es', { sensitivity: 'base' }) || comparaNombre(a, b) || (Number(a[0]) - Number(b[0]));
+        }
+        return Number(a[0]) - Number(b[0]);
+      })
       .map(([codigo, m]) => `
       <tr>
         <td>${codigo}</td>
