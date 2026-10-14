@@ -719,11 +719,102 @@ async function cargarTodo() {
   const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo'));
   if (mats) materialesCache = mats;
 
+  await cargarStockActual();
+  calcularRepartoStock();
+
   poblarProveedores('herraje');
   poblarProveedores('insumo');
   renderizarPedidos('herraje');
   renderizarPedidos('insumo');
   cargarUltimaImportacion();
+}
+
+// ---------------------------------------------------------------------
+// STOCK ACTUAL EN FÁBRICA
+// Stock = último conteo de "Actualizar stock físico" (ya convertido a la
+// unidad en que se piden los materiales) + recepciones cargadas DESPUÉS de
+// ese conteo. Un material sin conteo no tiene stock conocido (se muestra "—").
+//
+// stockActual[rubro][codigo]            -> stock total del material
+// stockAntesDePedido[rubro][codigo|ped] -> stock que queda disponible al
+//   llegar a ese pedido, repartiendo en el mismo orden de la cola de stock
+//   (priorizados, F. salida, F. pactada, nº de pedido). El primer pedido ve
+//   el stock completo; cada pedido descuenta lo que requiere; piso en 0.
+// ---------------------------------------------------------------------
+let stockActual = { herraje: {}, insumo: {} };
+let stockAntesDePedido = { herraje: {}, insumo: {} };
+
+async function cargarStockActual() {
+  stockActual = { herraje: {}, insumo: {} };
+  const { data: conteos, error: eConteos } = await obtenerTodasLasFilas(() => sb
+    .from('v_ultimo_conteo')
+    .select('material_codigo, material_rubro, cantidad, fecha')
+    .order('material_codigo'));
+  if (eConteos || !conteos || conteos.length === 0) {
+    if (eConteos) console.error('No se pudo leer el último conteo de stock:', eConteos);
+    return;
+  }
+
+  const masViejo = conteos.reduce((min, c) => (!min || c.fecha < min ? c.fecha : min), null);
+  const { data: recepciones, error: eRec } = await obtenerTodasLasFilas(() => sb
+    .from('recepciones')
+    .select('material_codigo, material_rubro, cantidad, fecha')
+    .gte('fecha', masViejo)
+    .order('fecha'));
+  if (eRec) console.error('No se pudieron leer las recepciones para el stock actual:', eRec);
+
+  const recibidoPorMaterial = {};
+  (recepciones || []).forEach(r => {
+    const clave = r.material_rubro + '|' + r.material_codigo;
+    (recibidoPorMaterial[clave] = recibidoPorMaterial[clave] || []).push(r);
+  });
+
+  conteos.forEach(c => {
+    if (!stockActual[c.material_rubro]) return;
+    const tConteo = Date.parse(c.fecha);
+    const posteriores = (recibidoPorMaterial[c.material_rubro + '|' + c.material_codigo] || [])
+      .filter(r => Date.parse(r.fecha) > tConteo)
+      .reduce((acc, r) => acc + Number(r.cantidad), 0);
+    stockActual[c.material_rubro][c.material_codigo] = Number(c.cantidad) + posteriores;
+  });
+}
+
+function calcularRepartoStock() {
+  stockAntesDePedido = { herraje: {}, insumo: {} };
+  ['herraje', 'insumo'].forEach(rubro => {
+    // Agrupar lo pendiente (pedidos abiertos) por material y pedido
+    const porMaterial = {};
+    datosPendientes[rubro].forEach(f => {
+      if (esDespachado(f.fecha_salida)) return;
+      const grupo = porMaterial[f.material_codigo] = porMaterial[f.material_codigo] || {};
+      const p = grupo[f.pedido_numero] = grupo[f.pedido_numero] || {
+        numero: f.pedido_numero, requerido: 0, prioridad: false,
+        salida: f.fecha_salida || '', pactada: f.fecha_pactada || '',
+      };
+      p.requerido += Number(f.cantidad_requerida);
+      p.prioridad = p.prioridad || !!f.prioridad_manual;
+    });
+
+    Object.entries(porMaterial).forEach(([codigo, pedidos]) => {
+      const stock = stockActual[rubro][codigo];
+      if (stock === undefined) return;
+      let restante = Math.max(0, stock);
+      Object.values(pedidos)
+        .sort((a, b) =>
+          (b.prioridad - a.prioridad)
+          || (a.salida || '9999').localeCompare(b.salida || '9999')
+          || (a.pactada || '9999').localeCompare(b.pactada || '9999')
+          || (a.numero - b.numero))
+        .forEach(p => {
+          stockAntesDePedido[rubro][codigo + '|' + p.numero] = restante;
+          restante = Math.max(0, restante - p.requerido);
+        });
+    });
+  });
+}
+
+function textoStock(valor) {
+  return valor === undefined ? '<span style="color:var(--gris-claro);">—</span>' : redondear2(valor);
 }
 
 function redondear2(n) {
@@ -836,7 +927,7 @@ function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
   if (vista === 'material') {
-    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
+    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Stock actual</th><th>Pedidos afectados</th></tr>';
     renderizarPorMaterial(rubro);
   } else {
     thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
@@ -1076,18 +1167,27 @@ function renderizarPorMaterial(rubro) {
       <td>${g.nombre || ''}</td>
       <td>${g.proveedor || ''}</td>
       <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(pendienteTotal)}</td>
+      <td class="pend-num">${textoStock(stockActual[rubro][codigo])}</td>
       <td>${pedidosDelMaterial.length}</td>
     `;
     tbody.appendChild(trMat);
 
     const filasPedido = pedidosDelMaterial
-      .sort((a, b) => (a[1].fecha_salida || a[1].fecha_pactada || '').localeCompare(b[1].fecha_salida || b[1].fecha_pactada || ''))
+      // Mismo orden que la cola de reparto de stock: priorizados primero,
+      // después F. salida, F. pactada y nº de pedido. Así la columna
+      // "Stock disponible" va bajando de arriba hacia abajo.
+      .sort((a, b) =>
+        (Number(b[1].prioridad) - Number(a[1].prioridad))
+        || (a[1].fecha_salida || '9999').localeCompare(b[1].fecha_salida || '9999')
+        || (a[1].fecha_pactada || '9999').localeCompare(b[1].fecha_pactada || '9999')
+        || (Number(a[0]) - Number(b[0])))
       .map(([numero, p]) => `
         <tr>
           <td>${numero}</td>
           <td>${p.cliente || ''}</td>
           <td>${p.fecha_salida || ''}</td>
           <td>${redondear2(p.requerido)}</td>
+          <td class="pend-num">${p.cerrado ? '<span style="color:var(--gris-claro);">—</span>' : textoStock(stockAntesDePedido[rubro][codigo + '|' + numero])}</td>
           <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
           <td>
             ${p.cerrado
@@ -1117,9 +1217,9 @@ function renderizarPorMaterial(rubro) {
     trDetalle.className = 'detalle';
     trDetalle.id = 'detmat-' + rubro + '-' + codigo;
     trDetalle.style.display = 'none';
-    trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
       <table>
-        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Stock disponible</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
       </table>
     </div></td>`;
@@ -1127,7 +1227,7 @@ function renderizarPorMaterial(rubro) {
   });
 
   if (codigosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
   }
 }
 
