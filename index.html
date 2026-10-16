@@ -248,6 +248,11 @@
           <option value="pedido">Ver por pedido</option>
           <option value="material">Ver por material</option>
         </select>
+        <select id="orden-mat-herraje" onchange="renderizarPedidos('herraje')" title="Orden de los materiales (dentro de cada pedido y en la vista por material)">
+          <option value="codigo">Materiales por código</option>
+          <option value="nombre">Materiales A-Z</option>
+          <option value="proveedor">Materiales por proveedor</option>
+        </select>
         <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
           <input type="checkbox" id="ocultar-cubierto-herraje" onchange="renderizarPedidos('herraje')">
           Ocultar lo ya cubierto
@@ -287,6 +292,11 @@
         <select id="vista-insumo" onchange="renderizarPedidos('insumo')">
           <option value="pedido">Ver por pedido</option>
           <option value="material">Ver por material</option>
+        </select>
+        <select id="orden-mat-insumo" onchange="renderizarPedidos('insumo')" title="Orden de los materiales (dentro de cada pedido y en la vista por material)">
+          <option value="codigo">Materiales por código</option>
+          <option value="nombre">Materiales A-Z</option>
+          <option value="proveedor">Materiales por proveedor</option>
         </select>
         <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);">
           <input type="checkbox" id="ocultar-cubierto-insumo" onchange="renderizarPedidos('insumo')">
@@ -853,6 +863,23 @@ function filtrarPorProveedor(rubro, filas) {
   return filas.filter(f => f.proveedor === elegido);
 }
 
+// Comparador para ordenar materiales según el selector "orden-mat-<rubro>":
+// por código (numérico), alfabético por nombre, o por proveedor (y dentro
+// de cada proveedor, alfabético). Los sin proveedor van al final.
+function comparadorMateriales(rubro) {
+  const modo = document.getElementById('orden-mat-' + rubro).value;
+  const txt = (a, b) => String(a || '').localeCompare(String(b || ''), 'es', { sensitivity: 'base' });
+  return (a, b) => {
+    if (modo === 'nombre') return txt(a.nombre, b.nombre) || (a.codigo - b.codigo);
+    if (modo === 'proveedor') {
+      if (a.proveedor && !b.proveedor) return -1;
+      if (!a.proveedor && b.proveedor) return 1;
+      return txt(a.proveedor, b.proveedor) || txt(a.nombre, b.nombre) || (a.codigo - b.codigo);
+    }
+    return (a.codigo - b.codigo);
+  };
+}
+
 function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
@@ -968,7 +995,9 @@ function renderizarPorPedido(rubro) {
     trDetalle.id = 'det-' + rubro + '-' + numero;
     trDetalle.style.display = 'none';
 
+    const cmpMat = comparadorMateriales(rubro);
     const filasMat = Object.entries(porMaterial)
+      .sort(([ca, a], [cb, b]) => cmpMat({ ...a, codigo: Number(ca) }, { ...b, codigo: Number(cb) }))
       .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
       .map(([codigo, m]) => `
       <tr>
@@ -1081,7 +1110,7 @@ function renderizarPorMaterial(rubro) {
       const texto = (codigo + ' ' + g.nombre + ' ' + Object.keys(g.pedidos).join(' ')).toLowerCase();
       return !filtroTexto || texto.includes(filtroTexto);
     })
-    .sort((a, b) => (porMaterial[a].nombre || '').localeCompare(porMaterial[b].nombre || ''));
+    .sort((a, b) => comparadorMateriales(rubro)({ ...porMaterial[a], codigo: Number(a) }, { ...porMaterial[b], codigo: Number(b) }));
 
   codigosOrdenados.forEach(codigo => {
     const g = porMaterial[codigo];
