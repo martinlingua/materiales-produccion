@@ -857,7 +857,7 @@ function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
   if (vista === 'material') {
-    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th><th></th></tr>';
+    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Stock actual</th><th>Pedidos afectados</th><th></th></tr>';
     renderizarPorMaterial(rubro);
   } else {
     thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
@@ -1049,10 +1049,14 @@ function renderizarPorMaterial(rubro) {
       porMaterial[fila.material_codigo] = {
         nombre: fila.material_nombre,
         proveedor: fila.proveedor,
+        stock: null,
         pedidos: {},
       };
     }
     const grupo = porMaterial[fila.material_codigo];
+    // Stock disponible ANTES de repartirlo entre pedidos (último conteo +
+    // recepciones generales posteriores). Solo viene en las filas activas.
+    if (!fila._cerrado && fila.stock_general_disponible != null) grupo.stock = Number(fila.stock_general_disponible);
     if (!grupo.pedidos[fila.pedido_numero]) {
       grupo.pedidos[fila.pedido_numero] = {
         cliente: fila.cliente,
@@ -1097,6 +1101,7 @@ function renderizarPorMaterial(rubro) {
       <td>${g.nombre || ''}</td>
       <td>${g.proveedor || ''}</td>
       <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(pendienteTotal)}</td>
+      <td class="pend-num" title="Stock disponible antes de repartirlo entre los pedidos">${g.stock === null ? '<span style="color:var(--gris-claro);">—</span>' : '<strong>' + redondear2(g.stock) + '</strong>'}</td>
       <td>${pedidosDelMaterial.length}</td>
       <td style="white-space:nowrap;">${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
               onclick="event.stopPropagation(); ajustarStock(${codigo}, '${rubro}')"
@@ -1141,7 +1146,7 @@ function renderizarPorMaterial(rubro) {
     trDetalle.className = 'detalle';
     trDetalle.id = 'detmat-' + rubro + '-' + codigo;
     trDetalle.style.display = 'none';
-    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="7"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
@@ -1151,7 +1156,7 @@ function renderizarPorMaterial(rubro) {
   });
 
   if (codigosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
   }
 }
 
