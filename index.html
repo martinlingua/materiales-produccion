@@ -430,6 +430,27 @@
         </div>
         <div id="stock-aviso"></div>
       </div>
+
+      <div class="panel">
+        <h2>Ajustar el stock de un material</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Para corregir un solo material (merma, descarte, error de conteo) sin subir un balance entero.
+          Queda guardado como un conteo nuevo de ese material, con el motivo. Ojo: el próximo balance
+          que subas reemplaza este ajuste, así que conviene que el sistema de gestión refleje la misma baja.
+        </p>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="ajuste-rubro" onchange="buscarParaAjuste()">
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label style="flex:1; min-width:220px;">Buscar material (código o palabras del nombre)
+            <input type="text" id="ajuste-busqueda" placeholder="Ej: tubo 40x20, 2457..." oninput="buscarParaAjuste()">
+          </label>
+        </div>
+        <div id="ajuste-resultados" style="margin-top:8px;"></div>
+      </div>
     </section>
 
     <!-- CATALOGO / FACTORES DE CONVERSION -->
@@ -836,7 +857,7 @@ function renderizarPedidos(rubro) {
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
   if (vista === 'material') {
-    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th></tr>';
+    thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Pedidos afectados</th><th></th></tr>';
     renderizarPorMaterial(rubro);
   } else {
     thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
@@ -1077,6 +1098,9 @@ function renderizarPorMaterial(rubro) {
       <td>${g.proveedor || ''}</td>
       <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(pendienteTotal)}</td>
       <td>${pedidosDelMaterial.length}</td>
+      <td style="white-space:nowrap;">${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
+              onclick="event.stopPropagation(); ajustarStock(${codigo}, '${rubro}')"
+              title="Corrige el stock físico de este material (merma, descarte, error de conteo)">Ajustar stock</button>` : ''}</td>
     `;
     tbody.appendChild(trMat);
 
@@ -1117,7 +1141,7 @@ function renderizarPorMaterial(rubro) {
     trDetalle.className = 'detalle';
     trDetalle.id = 'detmat-' + rubro + '-' + codigo;
     trDetalle.style.display = 'none';
-    trDetalle.innerHTML = `<td colspan="5"><div class="detalle-materiales">
+    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
@@ -1127,7 +1151,7 @@ function renderizarPorMaterial(rubro) {
   });
 
   if (codigosOrdenados.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
   }
 }
 
@@ -1524,6 +1548,54 @@ function imprimirFaltantes(rubro) {
     iframe.contentWindow.print();
     setTimeout(() => iframe.remove(), 60000);
   }, 250);
+}
+
+// ---------------------------------------------------------------------
+// AJUSTAR STOCK DE UN MATERIAL: inserta un conteo nuevo solo para ese
+// material (el último conteo manda; recepciones posteriores se suman).
+// ---------------------------------------------------------------------
+async function ajustarStock(codigo, rubro) {
+  if (!puedeEscribir()) { alert('Tu usuario no tiene permiso para ajustar stock.'); return; }
+  const mat = materialesCache.find(m => m.codigo === codigo && m.rubro === rubro) || {};
+  const { data: ult } = await sb.from('v_ultimo_conteo').select('cantidad, fecha')
+    .eq('material_codigo', codigo).eq('material_rubro', rubro).limit(1);
+  const unidad = mat.umed ? ' ' + mat.umed : '';
+  const previo = ult && ult.length
+    ? `Último conteo: ${redondear2(ult[0].cantidad)}${unidad} (${new Date(ult[0].fecha).toLocaleDateString('es-AR')}).`
+    : 'Todavía no tiene conteo cargado.';
+  const txt = prompt(`${codigo} — ${mat.nombre || ''}\n${previo}\n\nStock REAL ahora${unidad ? ' (en' + unidad + ')' : ''}. Reemplaza el conteo anterior:`, '0');
+  if (txt === null) return;
+  const cantidad = parseFloat(String(txt).replace(',', '.'));
+  if (!Number.isFinite(cantidad) || cantidad < 0) { alert('Ingresá un número mayor o igual a 0.'); return; }
+  const motivo = (prompt('Motivo (opcional): merma, descarte, error de conteo...', '') || '').trim();
+  const { error } = await sb.from('conteos_stock').insert({
+    material_codigo: codigo,
+    material_rubro: rubro,
+    cantidad: cantidad,
+    cantidad_contada: cantidad,
+    factor_aplicado: 1,
+    usuario_id: perfilActual.id,
+    archivo: 'Ajuste manual' + (motivo ? ': ' + motivo : ''),
+  });
+  if (error) { alert('No se pudo guardar el ajuste: ' + error.message); return; }
+  const av = document.getElementById('ajuste-resultados');
+  if (av) av.innerHTML = `<div class="aviso ok">Stock de ${codigo} ajustado a ${redondear2(cantidad)}${unidad}.</div>`;
+  await cargarTodo();
+}
+
+function buscarParaAjuste() {
+  const rubro = document.getElementById('ajuste-rubro').value;
+  const palabras = normalizarTexto(document.getElementById('ajuste-busqueda').value).split(/\s+/).filter(Boolean);
+  const cont = document.getElementById('ajuste-resultados');
+  if (palabras.length === 0) { cont.innerHTML = ''; return; }
+  const hallados = materialesCache
+    .filter(m => m.rubro === rubro)
+    .filter(m => { const t = normalizarTexto(m.codigo + ' ' + (m.nombre || '')); return palabras.every(p => t.includes(p)); })
+    .slice(0, 15);
+  if (hallados.length === 0) { cont.innerHTML = '<div style="color:var(--gris-claro);">Sin coincidencias.</div>'; return; }
+  cont.innerHTML = '<table class="pedidos"><tbody>' + hallados.map(m => `
+    <tr><td><strong>${m.codigo}</strong></td><td>${escaparHTML(m.nombre || '')}</td><td>${escaparHTML(m.umed || '')}</td>
+    <td><button class="primario" style="font-size:11px; padding:3px 8px;" onclick="ajustarStock(${m.codigo}, '${rubro}')">Ajustar stock</button></td></tr>`).join('') + '</tbody></table>';
 }
 
 // ---------------------------------------------------------------------
