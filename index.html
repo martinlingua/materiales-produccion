@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
   :root {
     --amarillo: #FFCC03;
@@ -222,6 +223,7 @@
     <button data-tab="herraje" class="tab-btn activa" onclick="cambiarTab('herraje')">Herrajes</button>
     <button data-tab="insumo" class="tab-btn" onclick="cambiarTab('insumo')">Insumos</button>
     <button data-tab="recepcion" class="tab-btn" onclick="cambiarTab('recepcion')">Cargar recepción</button>
+    <button data-tab="etiquetas" class="tab-btn" onclick="cambiarTab('etiquetas')">Etiquetas de piezas</button>
     <button data-tab="importar" class="tab-btn solo-comprador" onclick="cambiarTab('importar')">Importar del sistema</button>
     <button data-tab="stock" class="tab-btn solo-comprador" onclick="cambiarTab('stock')">Actualizar stock físico</button>
     <button data-tab="catalogo" class="tab-btn solo-comprador" onclick="cambiarTab('catalogo')">Catálogo / factores</button>
@@ -463,6 +465,73 @@
       </div>
     </section>
 
+
+    <!-- ETIQUETAS DE PIEZAS (código de barras por pieza) -->
+    <section id="sec-etiquetas" class="seccion">
+      <div class="panel" id="etq-importar" style="display:none;">
+        <h2>Cargar piezas del sistema</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí el archivo de materiales por pieza del sistema (el que trae las columnas <strong>Codigo</strong>
+          = pedido, <strong>Estructura</strong>, <strong>Pieza</strong> y <strong>CodPieza</strong>). Se agrega o
+          actualiza lo que haya; no borra piezas de pedidos que no estén en el archivo.
+        </p>
+        <div class="fila-form">
+          <label>Archivo (.xls del sistema)
+            <input type="file" id="etq-archivo" accept=".xls,.xlsx,.html,.csv">
+          </label>
+          <button class="primario" onclick="importarPiezas()">Cargar piezas</button>
+        </div>
+        <div id="etq-aviso-import"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Etiquetas de piezas</h2>
+        <div id="etq-aviso"></div>
+        <div class="fila-form">
+          <label>1. Distribuidor / cliente
+            <select id="etq-cliente" onchange="etqPoblarPedidos()"></select>
+          </label>
+          <label>Buscar número de pedido
+            <input type="text" id="etq-buscar-pedido" placeholder="Ej: 94765" oninput="etqPoblarPedidos()" style="width:130px;">
+          </label>
+          <label>2. Pedido
+            <select id="etq-pedido" onchange="etqCambioPedido()" style="min-width:300px;"></select>
+          </label>
+          <label>3. Estructura
+            <select id="etq-estructura" onchange="etqRenderPiezas()" style="min-width:260px; max-width:420px;"></select>
+          </label>
+          <label>Buscar pieza
+            <input type="text" id="etq-buscar-pieza" placeholder="Parte del nombre..." oninput="etqRenderPiezas()" style="width:170px;">
+          </label>
+        </div>
+        <div class="fila-form">
+          <label>Formato de impresión
+            <select id="etq-formato" onchange="etqCambioFormato()">
+              <option value="hoja">Hoja A4 (varias etiquetas por hoja)</option>
+              <option value="rollo">Etiquetadora (una etiqueta por página)</option>
+            </select>
+          </label>
+          <label id="etq-medidas" style="display:none;">Tamaño de etiqueta (mm)
+            <span style="display:flex; gap:6px; align-items:center;">
+              <input type="number" id="etq-ancho" value="100" min="30" max="200" style="width:70px;"> x
+              <input type="number" id="etq-alto" value="50" min="20" max="200" style="width:70px;">
+            </span>
+          </label>
+          <button class="primario" onclick="etqImprimir('seleccion')" id="etq-btn-sel">Imprimir seleccionadas (0)</button>
+          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('estructura')">Imprimir esta estructura</button>
+          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('pedido')">Imprimir todo el pedido</button>
+        </div>
+        <div id="etq-resumen" style="font-size:13px; color:var(--gris-claro); margin:6px 0;"></div>
+        <table class="pedidos">
+          <thead><tr>
+            <th style="width:30px;"><input type="checkbox" id="etq-chk-todas" onclick="etqMarcarVisibles(this.checked)" title="Marcar / desmarcar las que se ven"></th>
+            <th>Pieza</th><th>Estructura</th><th>Medidas</th><th>Material</th><th>CodPieza</th>
+          </tr></thead>
+          <tbody id="etq-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- CATALOGO / FACTORES DE CONVERSION -->
     <section id="sec-catalogo" class="seccion">
       <div class="panel">
@@ -574,6 +643,7 @@ function cambiarTab(tab) {
   document.getElementById('sec-' + tab).classList.add('activa');
   if (tab === 'catalogo') cargarCatalogo();
   if (tab === 'recepcion') cargarHistorialRecepciones();
+  if (tab === 'etiquetas') cargarEtiquetas();
 }
 
 // ---------------------------------------------------------------------
@@ -1582,6 +1652,241 @@ function imprimirFaltantes(rubro) {
     iframe.contentWindow.print();
     setTimeout(() => iframe.remove(), 60000);
   }, 250);
+}
+
+
+// ---------------------------------------------------------------------
+// ETIQUETAS DE PIEZAS: filtra por distribuidor → pedido → estructura →
+// pieza e imprime etiquetas con código de barras (CODE128) del CodPieza.
+// El distribuidor sale de la tabla pedidos (campo cliente), cruzando por
+// número de pedido.
+// ---------------------------------------------------------------------
+let piezasCache = [];
+let clientePorPedido = {};
+const etqSeleccion = new Set();   // idhc_g de las piezas tildadas
+let etqVisibles = [];             // piezas que se ven con los filtros actuales
+
+function etqCliente(numero) { return clientePorPedido[numero] || '(sin cliente en el sistema)'; }
+
+async function cargarEtiquetas() {
+  document.getElementById('etq-importar').style.display = puedeEscribir() ? 'block' : 'none';
+  const aviso = document.getElementById('etq-aviso');
+  aviso.innerHTML = '';
+  const { data, error } = await obtenerTodasLasFilas(() => sb.from('piezas').select('*').order('idhc_g'));
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">No se pudieron leer las piezas: ${escaparHTML(error.message)}. Si es la primera vez, falta crear la tabla "piezas" en Supabase.</div>`;
+    return;
+  }
+  piezasCache = data;
+  const { data: peds } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente').order('numero'));
+  clientePorPedido = {};
+  (peds || []).forEach(p => clientePorPedido[p.numero] = p.cliente);
+  if (piezasCache.length === 0) {
+    aviso.innerHTML = '<div class="aviso info">Todavía no hay piezas cargadas.' + (puedeEscribir() ? ' Subí el archivo en el bloque de arriba.' : ' Pedile a compras que las cargue.') + '</div>';
+  }
+  const selCli = document.getElementById('etq-cliente');
+  const clientes = [...new Set(piezasCache.map(p => etqCliente(p.pedido_numero)))].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+  const previo = selCli.value;
+  selCli.innerHTML = '<option value="">Todos</option>' + clientes.map(c => `<option value="${escaparHTML(c)}">${escaparHTML(c)}</option>`).join('');
+  if (clientes.includes(previo)) selCli.value = previo;
+  etqPoblarPedidos();
+}
+
+function etqPoblarPedidos() {
+  const cli = document.getElementById('etq-cliente').value;
+  const q = document.getElementById('etq-buscar-pedido').value.trim();
+  const cuenta = {};
+  piezasCache.forEach(p => {
+    if (cli && etqCliente(p.pedido_numero) !== cli) return;
+    if (q && !String(p.pedido_numero).includes(q)) return;
+    cuenta[p.pedido_numero] = (cuenta[p.pedido_numero] || 0) + 1;
+  });
+  const sel = document.getElementById('etq-pedido');
+  const previo = sel.value;
+  const numeros = Object.keys(cuenta).map(Number).sort((a, b) => b - a);
+  sel.innerHTML = '<option value="">— elegí un pedido —</option>' + numeros.map(n =>
+    `<option value="${n}">${n} — ${escaparHTML(etqCliente(n))} (${cuenta[n]} piezas)</option>`).join('');
+  if (numeros.length === 1) sel.value = String(numeros[0]);
+  else if (numeros.includes(Number(previo))) sel.value = previo;
+  etqCambioPedido();
+}
+
+function etqCambioPedido() {
+  const ped = Number(document.getElementById('etq-pedido').value);
+  const sel = document.getElementById('etq-estructura');
+  const cuenta = {};
+  if (ped) piezasCache.filter(p => p.pedido_numero === ped).forEach(p => cuenta[p.estructura] = (cuenta[p.estructura] || 0) + 1);
+  const estructuras = Object.keys(cuenta).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base', numeric: true }));
+  sel.innerHTML = `<option value="">Todas las estructuras</option>` + estructuras.map(e =>
+    `<option value="${escaparHTML(e)}">${escaparHTML(e)} (${cuenta[e]})</option>`).join('');
+  etqRenderPiezas();
+}
+
+function etqFiltradas(alcance) {
+  const ped = Number(document.getElementById('etq-pedido').value);
+  if (!ped) return [];
+  let filas = piezasCache.filter(p => p.pedido_numero === ped);
+  if (alcance === 'pedido') return filas;
+  const est = document.getElementById('etq-estructura').value;
+  if (est) filas = filas.filter(p => p.estructura === est);
+  if (alcance === 'estructura') return filas;
+  const q = normalizarTexto(document.getElementById('etq-buscar-pieza').value);
+  if (q) filas = filas.filter(p => normalizarTexto(p.pieza + ' ' + (p.parte || '') + ' ' + (p.cod_pieza || '')).includes(q));
+  return filas;
+}
+
+function etqRenderPiezas() {
+  const tbody = document.getElementById('etq-tbody');
+  etqVisibles = etqFiltradas('vista');
+  const total = etqFiltradas('pedido').length;
+  if (!document.getElementById('etq-pedido').value) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">Elegí un pedido para ver sus piezas.</td></tr>';
+    document.getElementById('etq-resumen').textContent = '';
+    etqActualizarBoton();
+    return;
+  }
+  const medidas = p => [p.largo, p.ancho, p.espesor].map(v => v == null ? '' : redondear2(v)).filter(Boolean).join(' x ');
+  tbody.innerHTML = etqVisibles.map(p => `
+    <tr>
+      <td><input type="checkbox" class="etq-chk" value="${p.idhc_g}" ${etqSeleccion.has(p.idhc_g) ? 'checked' : ''} onchange="etqToggle(${p.idhc_g}, this.checked)"></td>
+      <td>${escaparHTML(p.pieza)}</td>
+      <td style="font-size:12px;">${escaparHTML(p.estructura)}</td>
+      <td>${medidas(p)}</td>
+      <td style="font-size:12px;">${escaparHTML(p.material || '')}</td>
+      <td><strong>${escaparHTML(p.cod_pieza)}</strong></td>
+    </tr>`).join('') || '<tr><td colspan="6" style="color:var(--gris-claro);">Sin piezas con ese filtro.</td></tr>';
+  document.getElementById('etq-resumen').textContent = `Cliente: ${etqCliente(Number(document.getElementById('etq-pedido').value))} · Mostrando ${etqVisibles.length} de ${total} piezas del pedido`;
+  etqActualizarBoton();
+}
+
+function etqToggle(id, marcado) {
+  if (marcado) etqSeleccion.add(id); else etqSeleccion.delete(id);
+  etqActualizarBoton();
+}
+
+function etqMarcarVisibles(marcar) {
+  etqVisibles.forEach(p => { if (marcar) etqSeleccion.add(p.idhc_g); else etqSeleccion.delete(p.idhc_g); });
+  etqRenderPiezas();
+}
+
+function etqActualizarBoton() {
+  const ped = Number(document.getElementById('etq-pedido').value);
+  const n = piezasCache.filter(p => p.pedido_numero === ped && etqSeleccion.has(p.idhc_g)).length;
+  document.getElementById('etq-btn-sel').textContent = `Imprimir seleccionadas (${n})`;
+}
+
+function etqCambioFormato() {
+  document.getElementById('etq-medidas').style.display = document.getElementById('etq-formato').value === 'rollo' ? 'flex' : 'none';
+}
+
+// Código de barras CODE128 como SVG que escala al ancho de la etiqueta.
+function svgCodigoBarras(valor, alturaBarras = 46, alturaMm = 16) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  JsBarcode(svg, String(valor), { format: 'CODE128', displayValue: true, fontSize: 16, height: alturaBarras, margin: 0, marginLeft: 12, marginRight: 12, width: 2, textMargin: 2 });
+  const w = svg.getAttribute('width'), h = svg.getAttribute('height');
+  if (!svg.getAttribute('viewBox') && w && h) svg.setAttribute('viewBox', `0 0 ${parseFloat(w)} ${parseFloat(h)}`);
+  svg.removeAttribute('width'); svg.removeAttribute('height');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.setAttribute('style', 'width:100%; height:' + alturaMm + 'mm; display:block; overflow:visible;');
+  return svg.outerHTML;
+}
+
+function etqImprimir(alcance) {
+  if (typeof JsBarcode === 'undefined') { alert('No se pudo cargar la librería de códigos de barras (¿sin internet?). Recargá la página.'); return; }
+  const ped = Number(document.getElementById('etq-pedido').value);
+  if (!ped) { alert('Elegí un pedido primero.'); return; }
+  let filas;
+  if (alcance === 'seleccion') filas = piezasCache.filter(p => p.pedido_numero === ped && etqSeleccion.has(p.idhc_g));
+  else filas = etqFiltradas(alcance);
+  if (filas.length === 0) {
+    alert(alcance === 'seleccion' ? 'No hay piezas tildadas en este pedido. Tildalas en la lista o usá "Imprimir esta estructura / todo el pedido".' : 'No hay piezas para imprimir.');
+    return;
+  }
+  if (filas.length > 150 && !confirm(`Vas a imprimir ${filas.length} etiquetas. ¿Seguro?`)) return;
+
+  const rollo = document.getElementById('etq-formato').value === 'rollo';
+  const ancho = Math.max(30, Number(document.getElementById('etq-ancho').value) || 100);
+  const alto = Math.max(20, Number(document.getElementById('etq-alto').value) || 50);
+  const cliente = etqCliente(ped);
+
+  const etiquetas = filas.map(p => `
+    <div class="etq">
+      ${rollo ? svgCodigoBarras(p.cod_pieza, 30, Math.min(alto * 0.45, 24)) : svgCodigoBarras(p.cod_pieza)}
+      <div class="l1"><strong>${ped}</strong> · ${escaparHTML(cliente)}</div>
+      <div class="l2">${escaparHTML(p.estructura)}</div>
+      <div class="l3">${escaparHTML(p.pieza)}</div>
+    </div>`).join('');
+
+  const css = rollo
+    ? `@page { size: ${ancho}mm ${alto}mm; margin: 0; }
+       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 3mm; page-break-after: always; overflow: hidden; }`
+    : `@page { size: A4; margin: 8mm; }
+       .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
+       .etq { height: 44mm; padding: 2.5mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; }`;
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas pedido ${ped}</title><style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #000; }
+    ${css}
+    .l1 { font-size: 9pt; margin-top: 1mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .l2 { font-size: 7.5pt; color: #333; line-height: 1.15; max-height: 2.4em; overflow: hidden; word-break: break-all; }
+    .l3 { font-size: 9pt; font-weight: bold; line-height: 1.15; max-height: 2.4em; overflow: hidden; }
+  </style></head><body>${rollo ? etiquetas : `<div class="hoja">${etiquetas}</div>`}</body></html>`;
+
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed; right:0; bottom:0; width:0; height:0; border:0;';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  setTimeout(() => { iframe.contentWindow.focus(); iframe.contentWindow.print(); }, 300);
+  setTimeout(() => iframe.remove(), 60000);
+}
+
+async function importarPiezas() {
+  const aviso = document.getElementById('etq-aviso-import');
+  const input = document.getElementById('etq-archivo');
+  if (!input.files.length) { aviso.innerHTML = '<div class="aviso error">Elegí un archivo primero.</div>'; return; }
+  aviso.innerHTML = '<div class="aviso info">Procesando...</div>';
+  try {
+    const texto = await input.files[0].text();
+    let registros;
+    if (/<html|<table|<form/i.test(texto.slice(0, 2000))) {
+      registros = leerTablaHTML(texto);
+    } else {
+      const wb = XLSX.read(await input.files[0].arrayBuffer());
+      registros = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }).map(r => {
+        const o = {}; Object.keys(r).forEach(k => o[k.trim()] = String(r[k]).trim()); return o;
+      });
+    }
+    const falta = ['Codigo', 'Estructura', 'Pieza', 'CodPieza', 'IDHC_G'].filter(c => !(registros[0] && c in registros[0]));
+    if (falta.length) throw new Error('Al archivo le faltan las columnas: ' + falta.join(', '));
+    const num = v => { const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; };
+    const filas = [];
+    let descartadas = 0;
+    registros.forEach(r => {
+      const pedido = parseInt(r['Codigo']), id = parseInt(r['IDHC_G']);
+      if (!Number.isFinite(pedido) || !Number.isFinite(id) || !r['CodPieza']) { descartadas++; return; }
+      filas.push({
+        idhc_g: id, pedido_numero: pedido, nrgln: parseInt(r['NRgln']) || null,
+        estructura: r['Estructura'], pieza: r['Pieza'], cod_pieza: r['CodPieza'],
+        parte: r['Parte'] || null, material: r['Material'] || null,
+        largo: num(r['L']), ancho: num(r['A']), espesor: num(r['Esp']),
+        terminacion: r['Terminacion'] || null, actualizado_en: new Date().toISOString(),
+      });
+    });
+    for (let i = 0; i < filas.length; i += 500) {
+      const { error } = await sb.from('piezas').upsert(filas.slice(i, i + 500), { onConflict: 'idhc_g' });
+      if (error) throw new Error(error.message);
+    }
+    const pedidos = new Set(filas.map(f => f.pedido_numero));
+    aviso.innerHTML = `<div class="aviso ok">Listo: ${filas.length} piezas de ${pedidos.size} pedidos cargadas${descartadas ? ` (${descartadas} filas sin datos se descartaron)` : ''}.</div>`;
+    input.value = '';
+    await cargarEtiquetas();
+    const sinCliente = [...pedidos].filter(n => !clientePorPedido[n]);
+    if (sinCliente.length) aviso.innerHTML += `<div class="aviso error">${sinCliente.length} pedido(s) no existen todavía en el sistema de compras y figuran sin cliente: ${sinCliente.slice(0, 15).join(', ')}${sinCliente.length > 15 ? '…' : ''}. Se resuelve importando los herrajes/insumos de esos pedidos.</div>`;
+  } catch (e) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo cargar: ${escaparHTML(e.message)}</div>`;
+  }
 }
 
 // ---------------------------------------------------------------------
