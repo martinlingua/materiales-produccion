@@ -488,20 +488,28 @@
         <h2>Etiquetas de piezas</h2>
         <div id="etq-aviso"></div>
         <div class="fila-form">
-          <label>1. Distribuidor / cliente
+          <label>Distribuidor / cliente
             <select id="etq-cliente" onchange="etqPoblarPedidos()"></select>
           </label>
-          <label>Buscar número de pedido
-            <input type="text" id="etq-buscar-pedido" placeholder="Ej: 94765" oninput="etqPoblarPedidos()" style="width:130px;">
+          <label>F. salida desde
+            <input type="date" id="etq-desde" onchange="etqPoblarPedidos()">
           </label>
-          <label>2. Pedido
-            <select id="etq-pedido" onchange="etqCambioPedido()" style="min-width:300px;"></select>
+          <label>F. salida hasta
+            <input type="date" id="etq-hasta" onchange="etqPoblarPedidos()">
           </label>
-          <label>3. Estructura
-            <select id="etq-estructura" onchange="etqRenderPiezas()" style="min-width:260px; max-width:420px;"></select>
+          <label>Buscar nº de pedido
+            <input type="text" id="etq-buscar-pedido" placeholder="Ej: 94765" oninput="etqPoblarPedidos()" style="width:120px;">
+          </label>
+        </div>
+        <div class="fila-form">
+          <label>Pedido (opcional)
+            <select id="etq-pedido" onchange="etqCambioPedido()" style="min-width:320px;"></select>
+          </label>
+          <label>Estructura
+            <select id="etq-estructura" onchange="etqRenderPiezas()" style="min-width:240px; max-width:420px;"></select>
           </label>
           <label>Buscar pieza
-            <input type="text" id="etq-buscar-pieza" placeholder="Parte del nombre..." oninput="etqRenderPiezas()" style="width:170px;">
+            <input type="text" id="etq-buscar-pieza" placeholder="Parte del nombre..." oninput="etqRenderPiezas()" style="width:160px;">
           </label>
         </div>
         <div class="fila-form">
@@ -518,14 +526,15 @@
             </span>
           </label>
           <button class="primario" onclick="etqImprimir('seleccion')" id="etq-btn-sel">Imprimir seleccionadas (0)</button>
-          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('estructura')">Imprimir esta estructura</button>
-          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('pedido')">Imprimir todo el pedido</button>
+          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('vista')" id="etq-btn-vista">Imprimir lo que se ve</button>
+          <button class="primario" style="background:var(--gris-claro);" onclick="etqImprimir('todo')" id="etq-btn-todo">Imprimir todo</button>
+          <button class="primario" style="background:var(--gris-claro);" onclick="etqLimpiarSeleccion()">Limpiar selección</button>
         </div>
         <div id="etq-resumen" style="font-size:13px; color:var(--gris-claro); margin:6px 0;"></div>
         <table class="pedidos">
           <thead><tr>
             <th style="width:30px;"><input type="checkbox" id="etq-chk-todas" onclick="etqMarcarVisibles(this.checked)" title="Marcar / desmarcar las que se ven"></th>
-            <th>Pieza</th><th>Estructura</th><th>Medidas</th><th>Material</th><th>CodPieza</th>
+            <th>Distribuidor</th><th>Pedido</th><th>Estructura</th><th>Pieza</th><th>Medidas</th><th>Cód. barras</th>
           </tr></thead>
           <tbody id="etq-tbody"></tbody>
         </table>
@@ -622,6 +631,13 @@ async function cargarPerfil() {
   document.getElementById('app').style.display = 'block';
   if (data.rol === 'comprador' || data.rol === 'deposito') {
     document.querySelectorAll('.solo-comprador').forEach(el => el.style.display = 'inline-block');
+  }
+  // Usuarios de sector (carpintería, pintura, melamina): solo ven la pestaña
+  // de etiquetas, en modo lectura. No cargamos el resto de los datos.
+  if (data.rol === 'sector') {
+    document.querySelectorAll('.tab-btn').forEach(b => { if (b.dataset.tab !== 'etiquetas') b.style.display = 'none'; });
+    cambiarTab('etiquetas');
+    return;
   }
   await cargarTodo();
 }
@@ -1656,17 +1672,31 @@ function imprimirFaltantes(rubro) {
 
 
 // ---------------------------------------------------------------------
-// ETIQUETAS DE PIEZAS: filtra por distribuidor → pedido → estructura →
-// pieza e imprime etiquetas con código de barras (CODE128) del CodPieza.
-// El distribuidor sale de la tabla pedidos (campo cliente), cruzando por
-// número de pedido.
+// ETIQUETAS DE PIEZAS: filtra por distribuidor y fecha de salida de los
+// pedidos → pedido → estructura → pieza, e imprime etiquetas con código de
+// barras (CODE128) del IDHC_G. El distribuidor y la fecha de salida salen
+// de la tabla pedidos, cruzando por número de pedido. Se imprime ordenado
+// por distribuidor, pedido, estructura y pieza.
 // ---------------------------------------------------------------------
 let piezasCache = [];
 let clientePorPedido = {};
+let salidaPorPedido = {};
 const etqSeleccion = new Set();   // idhc_g de las piezas tildadas
 let etqVisibles = [];             // piezas que se ven con los filtros actuales
+const ETQ_MAX_FILAS = 1500;       // tope de filas dibujadas en pantalla
 
 function etqCliente(numero) { return clientePorPedido[numero] || '(sin cliente en el sistema)'; }
+const etqTxt = (a, b) => String(a || '').localeCompare(String(b || ''), 'es', { sensitivity: 'base', numeric: true });
+
+// Orden de impresión: distribuidor → nº de pedido → estructura → pieza.
+function etqOrdenar(filas) {
+  return [...filas].sort((a, b) =>
+    etqTxt(etqCliente(a.pedido_numero), etqCliente(b.pedido_numero))
+    || (a.pedido_numero - b.pedido_numero)
+    || etqTxt(a.estructura, b.estructura)
+    || etqTxt(a.pieza, b.pieza)
+    || (a.idhc_g - b.idhc_g));
+}
 
 async function cargarEtiquetas() {
   document.getElementById('etq-importar').style.display = puedeEscribir() ? 'block' : 'none';
@@ -1678,36 +1708,55 @@ async function cargarEtiquetas() {
     return;
   }
   piezasCache = data;
-  const { data: peds } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente').order('numero'));
-  clientePorPedido = {};
-  (peds || []).forEach(p => clientePorPedido[p.numero] = p.cliente);
+  const { data: peds } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_salida').order('numero'));
+  clientePorPedido = {}; salidaPorPedido = {};
+  (peds || []).forEach(p => { clientePorPedido[p.numero] = p.cliente; salidaPorPedido[p.numero] = p.fecha_salida; });
   if (piezasCache.length === 0) {
     aviso.innerHTML = '<div class="aviso info">Todavía no hay piezas cargadas.' + (puedeEscribir() ? ' Subí el archivo en el bloque de arriba.' : ' Pedile a compras que las cargue.') + '</div>';
   }
   const selCli = document.getElementById('etq-cliente');
-  const clientes = [...new Set(piezasCache.map(p => etqCliente(p.pedido_numero)))].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+  const clientes = [...new Set(piezasCache.map(p => etqCliente(p.pedido_numero)))].sort(etqTxt);
   const previo = selCli.value;
   selCli.innerHTML = '<option value="">Todos</option>' + clientes.map(c => `<option value="${escaparHTML(c)}">${escaparHTML(c)}</option>`).join('');
   if (clientes.includes(previo)) selCli.value = previo;
   etqPoblarPedidos();
 }
 
-function etqPoblarPedidos() {
+// Pedidos (con su cantidad de piezas) que cumplen distribuidor, rango de
+// fecha de salida y búsqueda por número. Con un rango puesto, los pedidos
+// sin fecha de salida cargada quedan afuera.
+function etqPedidosFiltrados() {
   const cli = document.getElementById('etq-cliente').value;
+  const desde = document.getElementById('etq-desde').value;
+  const hasta = document.getElementById('etq-hasta').value;
   const q = document.getElementById('etq-buscar-pedido').value.trim();
   const cuenta = {};
   piezasCache.forEach(p => {
-    if (cli && etqCliente(p.pedido_numero) !== cli) return;
-    if (q && !String(p.pedido_numero).includes(q)) return;
-    cuenta[p.pedido_numero] = (cuenta[p.pedido_numero] || 0) + 1;
+    const n = p.pedido_numero;
+    if (cli && etqCliente(n) !== cli) return;
+    if (q && !String(n).includes(q)) return;
+    if (desde || hasta) {
+      const f = salidaPorPedido[n];
+      if (!f || (desde && f < desde) || (hasta && f > hasta)) return;
+    }
+    cuenta[n] = (cuenta[n] || 0) + 1;
   });
+  return cuenta;
+}
+
+function etqHayFiltro() {
+  return ['etq-cliente', 'etq-desde', 'etq-hasta', 'etq-buscar-pedido'].some(id => document.getElementById(id).value.trim() !== '');
+}
+
+function etqPoblarPedidos() {
+  const cuenta = etqPedidosFiltrados();
   const sel = document.getElementById('etq-pedido');
   const previo = sel.value;
-  const numeros = Object.keys(cuenta).map(Number).sort((a, b) => b - a);
-  sel.innerHTML = '<option value="">— elegí un pedido —</option>' + numeros.map(n =>
-    `<option value="${n}">${n} — ${escaparHTML(etqCliente(n))} (${cuenta[n]} piezas)</option>`).join('');
-  if (numeros.length === 1) sel.value = String(numeros[0]);
-  else if (numeros.includes(Number(previo))) sel.value = previo;
+  const numeros = Object.keys(cuenta).map(Number).sort((a, b) => a - b);
+  const fmt = n => salidaPorPedido[n] ? ` · sale ${formatearFechaCorta(salidaPorPedido[n])}` : '';
+  sel.innerHTML = `<option value="">— todos los pedidos del filtro (${numeros.length}) —</option>` + numeros.map(n =>
+    `<option value="${n}">${n} — ${escaparHTML(etqCliente(n))}${fmt(n)} (${cuenta[n]} piezas)</option>`).join('');
+  if (numeros.includes(Number(previo))) sel.value = previo;
   etqCambioPedido();
 }
 
@@ -1716,52 +1765,65 @@ function etqCambioPedido() {
   const sel = document.getElementById('etq-estructura');
   const cuenta = {};
   if (ped) piezasCache.filter(p => p.pedido_numero === ped).forEach(p => cuenta[p.estructura] = (cuenta[p.estructura] || 0) + 1);
-  const estructuras = Object.keys(cuenta).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base', numeric: true }));
-  sel.innerHTML = `<option value="">Todas las estructuras</option>` + estructuras.map(e =>
-    `<option value="${escaparHTML(e)}">${escaparHTML(e)} (${cuenta[e]})</option>`).join('');
+  const estructuras = Object.keys(cuenta).sort(etqTxt);
+  sel.innerHTML = ped
+    ? `<option value="">Todas las estructuras</option>` + estructuras.map(e => `<option value="${escaparHTML(e)}">${escaparHTML(e)} (${cuenta[e]})</option>`).join('')
+    : '<option value="">(elegí un pedido para filtrar por estructura)</option>';
+  sel.disabled = !ped;
   etqRenderPiezas();
 }
 
+// alcance: 'todo' = todas las piezas de los pedidos en juego (el pedido
+// elegido, o todos los del filtro); 'vista' = además filtra por estructura
+// y por texto de pieza.
 function etqFiltradas(alcance) {
   const ped = Number(document.getElementById('etq-pedido').value);
-  if (!ped) return [];
-  let filas = piezasCache.filter(p => p.pedido_numero === ped);
-  if (alcance === 'pedido') return filas;
+  let filas;
+  if (ped) filas = piezasCache.filter(p => p.pedido_numero === ped);
+  else if (etqHayFiltro()) { const c = etqPedidosFiltrados(); filas = piezasCache.filter(p => p.pedido_numero in c); }
+  else return [];
+  if (alcance === 'todo') return etqOrdenar(filas);
   const est = document.getElementById('etq-estructura').value;
   if (est) filas = filas.filter(p => p.estructura === est);
-  if (alcance === 'estructura') return filas;
   const q = normalizarTexto(document.getElementById('etq-buscar-pieza').value);
-  if (q) filas = filas.filter(p => normalizarTexto(p.pieza + ' ' + (p.parte || '') + ' ' + (p.cod_pieza || '')).includes(q));
-  return filas;
+  if (q) filas = filas.filter(p => normalizarTexto(p.pieza + ' ' + (p.parte || '') + ' ' + p.idhc_g + ' ' + (p.cod_pieza || '')).includes(q));
+  return etqOrdenar(filas);
 }
 
 function etqRenderPiezas() {
   const tbody = document.getElementById('etq-tbody');
-  etqVisibles = etqFiltradas('vista');
-  const total = etqFiltradas('pedido').length;
-  if (!document.getElementById('etq-pedido').value) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">Elegí un pedido para ver sus piezas.</td></tr>';
-    document.getElementById('etq-resumen').textContent = '';
-    etqActualizarBoton();
+  const ped = Number(document.getElementById('etq-pedido').value);
+  const resumen = document.getElementById('etq-resumen');
+  if (!ped && !etqHayFiltro()) {
+    etqVisibles = [];
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">Elegí un distribuidor, un rango de fecha de salida o un pedido para ver las piezas.</td></tr>';
+    resumen.textContent = '';
+    etqActualizarBotones();
     return;
   }
+  etqVisibles = etqFiltradas('vista');
+  const todo = etqFiltradas('todo');
   const medidas = p => [p.largo, p.ancho, p.espesor].map(v => v == null ? '' : redondear2(v)).filter(Boolean).join(' x ');
-  tbody.innerHTML = etqVisibles.map(p => `
+  const dibujadas = etqVisibles.slice(0, ETQ_MAX_FILAS);
+  tbody.innerHTML = dibujadas.map(p => `
     <tr>
-      <td><input type="checkbox" class="etq-chk" value="${p.idhc_g}" ${etqSeleccion.has(p.idhc_g) ? 'checked' : ''} onchange="etqToggle(${p.idhc_g}, this.checked)"></td>
-      <td>${escaparHTML(p.pieza)}</td>
+      <td><input type="checkbox" value="${p.idhc_g}" ${etqSeleccion.has(p.idhc_g) ? 'checked' : ''} onchange="etqToggle(${p.idhc_g}, this.checked)"></td>
+      <td style="font-size:12px;">${escaparHTML(etqCliente(p.pedido_numero))}</td>
+      <td><strong>${p.pedido_numero}</strong></td>
       <td style="font-size:12px;">${escaparHTML(p.estructura)}</td>
+      <td>${escaparHTML(p.pieza)}</td>
       <td>${medidas(p)}</td>
-      <td style="font-size:12px;">${escaparHTML(p.material || '')}</td>
-      <td><strong>${escaparHTML(p.cod_pieza)}</strong></td>
-    </tr>`).join('') || '<tr><td colspan="6" style="color:var(--gris-claro);">Sin piezas con ese filtro.</td></tr>';
-  document.getElementById('etq-resumen').textContent = `Cliente: ${etqCliente(Number(document.getElementById('etq-pedido').value))} · Mostrando ${etqVisibles.length} de ${total} piezas del pedido`;
-  etqActualizarBoton();
+      <td><strong>${p.idhc_g}</strong></td>
+    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--gris-claro);">Sin piezas con ese filtro.</td></tr>';
+  const nPedidos = new Set(etqVisibles.map(p => p.pedido_numero)).size;
+  resumen.textContent = `${etqVisibles.length} piezas de ${nPedidos} pedido(s) a la vista, de ${todo.length} en el filtro.`
+    + (etqVisibles.length > ETQ_MAX_FILAS ? ` Se muestran las primeras ${ETQ_MAX_FILAS}; el botón de imprimir igual toma todas.` : '');
+  etqActualizarBotones();
 }
 
 function etqToggle(id, marcado) {
   if (marcado) etqSeleccion.add(id); else etqSeleccion.delete(id);
-  etqActualizarBoton();
+  etqActualizarBotones();
 }
 
 function etqMarcarVisibles(marcar) {
@@ -1769,10 +1831,15 @@ function etqMarcarVisibles(marcar) {
   etqRenderPiezas();
 }
 
-function etqActualizarBoton() {
+function etqLimpiarSeleccion() { etqSeleccion.clear(); etqRenderPiezas(); }
+
+function etqActualizarBotones() {
   const ped = Number(document.getElementById('etq-pedido').value);
-  const n = piezasCache.filter(p => p.pedido_numero === ped && etqSeleccion.has(p.idhc_g)).length;
-  document.getElementById('etq-btn-sel').textContent = `Imprimir seleccionadas (${n})`;
+  document.getElementById('etq-btn-sel').textContent = `Imprimir seleccionadas (${etqSeleccion.size})`;
+  document.getElementById('etq-btn-vista').textContent = `Imprimir lo que se ve (${etqVisibles.length})`;
+  const todo = (ped || etqHayFiltro()) ? etqFiltradas('todo') : [];
+  const nPed = new Set(todo.map(p => p.pedido_numero)).size;
+  document.getElementById('etq-btn-todo').textContent = ped ? `Imprimir todo el pedido (${todo.length})` : `Imprimir todos los pedidos del filtro (${nPed} pedidos, ${todo.length})`;
 }
 
 function etqCambioFormato() {
@@ -1793,44 +1860,46 @@ function svgCodigoBarras(valor, alturaBarras = 46, alturaMm = 16) {
 
 function etqImprimir(alcance) {
   if (typeof JsBarcode === 'undefined') { alert('No se pudo cargar la librería de códigos de barras (¿sin internet?). Recargá la página.'); return; }
-  const ped = Number(document.getElementById('etq-pedido').value);
-  if (!ped) { alert('Elegí un pedido primero.'); return; }
   let filas;
-  if (alcance === 'seleccion') filas = piezasCache.filter(p => p.pedido_numero === ped && etqSeleccion.has(p.idhc_g));
+  if (alcance === 'seleccion') filas = etqOrdenar(piezasCache.filter(p => etqSeleccion.has(p.idhc_g)));
   else filas = etqFiltradas(alcance);
   if (filas.length === 0) {
-    alert(alcance === 'seleccion' ? 'No hay piezas tildadas en este pedido. Tildalas en la lista o usá "Imprimir esta estructura / todo el pedido".' : 'No hay piezas para imprimir.');
+    alert(alcance === 'seleccion'
+      ? 'No hay piezas tildadas. Tildalas en la lista, o usá "Imprimir lo que se ve" / "Imprimir todo".'
+      : 'No hay piezas para imprimir. Elegí un distribuidor, un rango de fechas o un pedido.');
     return;
   }
-  if (filas.length > 150 && !confirm(`Vas a imprimir ${filas.length} etiquetas. ¿Seguro?`)) return;
+  const nPed = new Set(filas.map(p => p.pedido_numero)).size;
+  if (filas.length > 150 && !confirm(`Vas a imprimir ${filas.length} etiquetas de ${nPed} pedido(s). ¿Seguro?`)) return;
 
   const rollo = document.getElementById('etq-formato').value === 'rollo';
   const ancho = Math.max(30, Number(document.getElementById('etq-ancho').value) || 100);
   const alto = Math.max(20, Number(document.getElementById('etq-alto').value) || 50);
-  const cliente = etqCliente(ped);
 
   const etiquetas = filas.map(p => `
     <div class="etq">
-      ${rollo ? svgCodigoBarras(p.cod_pieza, 30, Math.min(alto * 0.45, 24)) : svgCodigoBarras(p.cod_pieza)}
-      <div class="l1"><strong>${ped}</strong> · ${escaparHTML(cliente)}</div>
-      <div class="l2">${escaparHTML(p.estructura)}</div>
-      <div class="l3">${escaparHTML(p.pieza)}</div>
+      ${rollo ? svgCodigoBarras(p.idhc_g, 30, Math.min(alto * 0.4, 20)) : svgCodigoBarras(p.idhc_g, 40, 14)}
+      <div class="l1">${escaparHTML(etqCliente(p.pedido_numero))}</div>
+      <div class="l2">Pedido <strong>${p.pedido_numero}</strong></div>
+      <div class="l3">${escaparHTML(p.estructura)}</div>
+      <div class="l4">${escaparHTML(p.pieza)}</div>
     </div>`).join('');
 
   const css = rollo
     ? `@page { size: ${ancho}mm ${alto}mm; margin: 0; }
-       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 3mm; page-break-after: always; overflow: hidden; }`
+       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 2.5mm; page-break-after: always; overflow: hidden; }`
     : `@page { size: A4; margin: 8mm; }
        .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
-       .etq { height: 44mm; padding: 2.5mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; }`;
+       .etq { height: 40mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; }`;
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas pedido ${ped}</title><style>
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas de piezas</title><style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #000; }
     ${css}
-    .l1 { font-size: 9pt; margin-top: 1mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .l2 { font-size: 7.5pt; color: #333; line-height: 1.15; max-height: 2.4em; overflow: hidden; word-break: break-all; }
-    .l3 { font-size: 9pt; font-weight: bold; line-height: 1.15; max-height: 2.4em; overflow: hidden; }
+    .l1 { font-size: 8.5pt; font-weight: bold; margin-top: 0.8mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .l2 { font-size: 8.5pt; white-space: nowrap; }
+    .l3 { font-size: 7pt; color: #333; line-height: 1.1; max-height: 2.2em; overflow: hidden; word-break: break-all; }
+    .l4 { font-size: 8.5pt; font-weight: bold; line-height: 1.1; max-height: 2.2em; overflow: hidden; }
   </style></head><body>${rollo ? etiquetas : `<div class="hoja">${etiquetas}</div>`}</body></html>`;
 
   const iframe = document.createElement('iframe');
@@ -1858,17 +1927,17 @@ async function importarPiezas() {
         const o = {}; Object.keys(r).forEach(k => o[k.trim()] = String(r[k]).trim()); return o;
       });
     }
-    const falta = ['Codigo', 'Estructura', 'Pieza', 'CodPieza', 'IDHC_G'].filter(c => !(registros[0] && c in registros[0]));
+    const falta = ['Codigo', 'Estructura', 'Pieza', 'IDHC_G'].filter(c => !(registros[0] && c in registros[0]));
     if (falta.length) throw new Error('Al archivo le faltan las columnas: ' + falta.join(', '));
     const num = v => { const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; };
     const filas = [];
     let descartadas = 0;
     registros.forEach(r => {
       const pedido = parseInt(r['Codigo']), id = parseInt(r['IDHC_G']);
-      if (!Number.isFinite(pedido) || !Number.isFinite(id) || !r['CodPieza']) { descartadas++; return; }
+      if (!Number.isFinite(pedido) || !Number.isFinite(id)) { descartadas++; return; }
       filas.push({
         idhc_g: id, pedido_numero: pedido, nrgln: parseInt(r['NRgln']) || null,
-        estructura: r['Estructura'], pieza: r['Pieza'], cod_pieza: r['CodPieza'],
+        estructura: r['Estructura'], pieza: r['Pieza'], cod_pieza: r['CodPieza'] || '',
         parte: r['Parte'] || null, material: r['Material'] || null,
         largo: num(r['L']), ancho: num(r['A']), espesor: num(r['Esp']),
         terminacion: r['Terminacion'] || null, actualizado_en: new Date().toISOString(),
