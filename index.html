@@ -1878,28 +1878,29 @@ function etqImprimir(alcance) {
 
   const etiquetas = filas.map(p => `
     <div class="etq">
-      ${rollo ? svgCodigoBarras(p.idhc_g, 30, Math.min(alto * 0.4, 20)) : svgCodigoBarras(p.idhc_g, 40, 14)}
       <div class="l1">${escaparHTML(etqCliente(p.pedido_numero))}</div>
       <div class="l2">Pedido <strong>${p.pedido_numero}</strong></div>
       <div class="l3">${escaparHTML(p.estructura)}</div>
       <div class="l4">${escaparHTML(p.pieza)}</div>
+      <div class="cb">${rollo ? svgCodigoBarras(p.idhc_g, 30, Math.min(alto * 0.32, 18)) : svgCodigoBarras(p.idhc_g, 40, 14)}</div>
     </div>`).join('');
 
   const css = rollo
     ? `@page { size: ${ancho}mm ${alto}mm; margin: 0; }
-       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 2.5mm; page-break-after: always; overflow: hidden; }`
+       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 2.5mm; page-break-after: always; overflow: hidden; display: flex; flex-direction: column; }`
     : `@page { size: A4; margin: 8mm; }
        .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
-       .etq { height: 40mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; }`;
+       .etq { height: 56mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; display: flex; flex-direction: column; }`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas de piezas</title><style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #000; }
     ${css}
-    .l1 { font-size: 8.5pt; font-weight: bold; margin-top: 0.8mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .l2 { font-size: 8.5pt; white-space: nowrap; }
-    .l3 { font-size: 7pt; color: #333; line-height: 1.1; max-height: 2.2em; overflow: hidden; word-break: break-all; }
-    .l4 { font-size: 8.5pt; font-weight: bold; line-height: 1.1; max-height: 2.2em; overflow: hidden; }
+    .l1 { font-size: 11.5pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .l2 { font-size: 11.5pt; white-space: nowrap; }
+    .l3 { font-size: 9pt; color: #222; line-height: 1.1; max-height: 2.2em; overflow: hidden; word-break: break-all; margin-top: 0.5mm; }
+    .l4 { font-size: 11.5pt; font-weight: bold; line-height: 1.1; max-height: 2.2em; overflow: hidden; margin-top: 0.5mm; }
+    .cb { margin-top: auto; padding-top: 1mm; }
   </style></head><body>${rollo ? etiquetas : `<div class="hoja">${etiquetas}</div>`}</body></html>`;
 
   const iframe = document.createElement('iframe');
