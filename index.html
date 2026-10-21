@@ -1932,6 +1932,29 @@ function etqImprimir(alcance) {
     });
     return out;
   };
+  // Reparte los muebles de un pedido en hojas A4. Costos en mm (coinciden con
+  // las alturas fijas del CSS): subtítulo de mueble 12, fila de 3 etiquetas 49,
+  // separación entre muebles 4; el encabezado ocupa 30 de los 276 útiles.
+  const UTIL_MM = 276, ENC_MM = 30, MT_MM = 12, FILA_MM = 49, SEP_MM = 4;
+  const paginarPedido = muebles => {
+    const paginas = []; let cur = [], y = 0;
+    const cerrar = () => { paginas.push(cur); cur = []; y = 0; };
+    muebles.forEach(m => {
+      const resto = [...m.piezas]; let cont = false;
+      while (resto.length) {
+        if (y + MT_MM + FILA_MM > UTIL_MM - ENC_MM && cur.length) cerrar();
+        y += MT_MM;
+        const filas = Math.max(1, Math.floor((UTIL_MM - ENC_MM - y) / FILA_MM));
+        const n = Math.min(resto.length, filas * 3);
+        cur.push({ estructura: m.estructura, cont, piezas: resto.splice(0, n) });
+        y += Math.ceil(n / 3) * FILA_MM + SEP_MM;
+        cont = true;
+        if (resto.length) cerrar();
+      }
+    });
+    if (cur.length) paginas.push(cur);
+    return paginas;
+  };
   const salidaTxt = n => salidaPorPedido[n] ? ` · Sale ${formatearFechaCorta(salidaPorPedido[n])}` : '';
   const cuerpo = grupos.map((g, i) => {
     const dist = escaparHTML(etqCliente(g.pedido)), cli = escaparHTML(etqClienteFinal(g.pedido) || '—');
@@ -1944,19 +1967,23 @@ function etqImprimir(alcance) {
         <div class="ps">${g.piezas.length} piezas${salidaTxt(g.pedido)}</div>
       </div>` + g.piezas.map(etiquetaHTML).join('');
     }
-    return `<section class="ped ${i > 0 ? 'nueva' : ''}">
+    // Hoja A4: se pagina a mano para que CADA hoja lleve el encabezado y el
+    // número "hoja n/total" del pedido (alturas fijas en mm, ver el CSS).
+    const hojas = paginarPedido(porEstructura(g.piezas));
+    return hojas.map((segmentos, k) => `<section class="page">
       <div class="enc">
         <div class="tit">Pedido <strong>${g.pedido}</strong></div>
         <div class="dc"><span>Distribuidor</span><b>${dist}</b></div>
         <div class="dc"><span>Cliente</span><b>${cli}</b></div>
+        <div class="pg"><span>Hoja</span><b>${k + 1}/${hojas.length}</b></div>
       </div>
       <div class="sub">Pedido ${g.pedido} · ${g.piezas.length} piezas${salidaTxt(g.pedido)}</div>
-      ${porEstructura(g.piezas).map(m => `
+      ${segmentos.map(m => `
         <div class="mueble">
-          <div class="mt">${escaparHTML(m.estructura)} <span>· ${m.piezas.length} pieza${m.piezas.length === 1 ? '' : 's'}</span></div>
+          <div class="mt">${escaparHTML(m.estructura)}${m.cont ? ' <em>(continuación)</em>' : ''} <span>· ${m.piezas.length} pieza${m.piezas.length === 1 ? '' : 's'}</span></div>
           <div class="hoja">${m.piezas.map(etiquetaHTML).join('')}</div>
         </div>`).join('')}
-    </section>`;
+    </section>`).join('');
   }).join('');
 
   const css = rollo
@@ -1967,18 +1994,23 @@ function etqImprimir(alcance) {
        .pl { font-size: 11pt; } .pl span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
        .ps { font-size: 9pt; color: #333; }`
     : `@page { size: A4; margin: 8mm; }
-       .ped.nueva { page-break-before: always; }
-       .enc { display: flex; align-items: stretch; border: 0.4mm solid #000; }
+       .page { break-after: page; page-break-after: always; overflow: hidden; }
+       .page:last-child { break-after: auto; page-break-after: auto; }
+       .enc { display: flex; align-items: stretch; border: 0.4mm solid #000; height: 17mm; overflow: hidden; }
        .enc > div { padding: 2.5mm 3mm; }
+       .pg { flex: 0 0 auto; border-left: 0.4mm solid #000; text-align: center; }
+       .pg span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
+       .pg b { font-size: 16pt; }
        .tit { font-size: 20pt; flex: 0 0 auto; border-right: 0.4mm solid #000; display: flex; align-items: center; }
        .tit strong { margin-left: 2mm; }
        .dc { flex: 1 1 0; border-right: 0.4mm solid #000; min-width: 0; }
        .dc:last-child { border-right: 0; }
        .dc span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
        .dc b { font-size: 11pt; line-height: 1.15; overflow-wrap: anywhere; }
-       .sub { font-size: 12pt; margin: 2.5mm 0 3mm; padding-bottom: 1.5mm; border-bottom: 0.3mm solid #000; }
+       .sub { font-size: 12pt; height: 11mm; padding-top: 2.5mm; border-bottom: 0.3mm solid #000; overflow: hidden; margin-bottom: 1mm; }
        .mueble { margin-bottom: 4mm; }
-       .mt { font-size: 15pt; font-weight: bold; padding: 1.5mm 2mm; margin-bottom: 2.5mm; background: #e6e6e6; border-left: 2mm solid #000; overflow-wrap: anywhere; break-after: avoid; page-break-after: avoid; }
+       .mt em { font-size: 10pt; font-weight: normal; }
+       .mt { font-size: 15pt; font-weight: bold; height: 9mm; line-height: 6mm; padding: 1.5mm 2mm; margin-bottom: 3mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #e6e6e6; border-left: 2mm solid #000; overflow-wrap: anywhere; break-after: avoid; page-break-after: avoid; }
        .mt span { font-size: 10pt; font-weight: normal; color: #333; }
        .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
        .etq { height: 46mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; display: flex; flex-direction: column; }`;
