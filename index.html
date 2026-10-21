@@ -488,7 +488,7 @@
         <h2>Etiquetas de piezas</h2>
         <div id="etq-aviso"></div>
         <div class="fila-form">
-          <label>Distribuidor / cliente
+          <label>Distribuidor
             <select id="etq-cliente" onchange="etqPoblarPedidos()"></select>
           </label>
           <label>F. salida desde
@@ -629,9 +629,13 @@ async function cargarPerfil() {
   document.getElementById('nombre-usuario').textContent = `${data.nombre} (${data.rol})`;
   document.getElementById('pantalla-login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
+  // Restablece las pestañas (si antes entró otro usuario en esta misma
+  // página, quedaron ocultas/mostradas según su rol) y arranca en Herrajes.
+  document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
   if (data.rol === 'comprador' || data.rol === 'deposito') {
     document.querySelectorAll('.solo-comprador').forEach(el => el.style.display = 'inline-block');
   }
+  if (data.rol !== 'sector') cambiarTab('herraje');
   // Usuarios de sector (carpintería, pintura, melamina): solo ven la pestaña
   // de etiquetas, en modo lectura. No cargamos el resto de los datos.
   if (data.rol === 'sector') {
@@ -645,6 +649,11 @@ async function cargarPerfil() {
 async function cerrarSesion() {
   await sb.auth.signOut();
   perfilActual = null;
+  // Limpia lo que cargó el usuario anterior para que el siguiente no lo vea.
+  document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
+  document.getElementById('banner-importacion').style.display = 'none';
+  piezasCache = []; etqSeleccion.clear(); etqVisibles = [];
+  document.getElementById('etq-tbody').innerHTML = '';
   document.getElementById('app').style.display = 'none';
   document.getElementById('pantalla-login').style.display = 'flex';
 }
@@ -1681,11 +1690,21 @@ function imprimirFaltantes(rubro) {
 let piezasCache = [];
 let clientePorPedido = {};
 let salidaPorPedido = {};
+let seguimientoPorPedido = {};   // { pedido: { distribuidor, cliente } } del export de seguimiento
 const etqSeleccion = new Set();   // idhc_g de las piezas tildadas
 let etqVisibles = [];             // piezas que se ven con los filtros actuales
 const ETQ_MAX_FILAS = 1500;       // tope de filas dibujadas en pantalla
 
-function etqCliente(numero) { return clientePorPedido[numero] || '(sin cliente en el sistema)'; }
+// "Distribuidor" de un pedido: el del export de seguimiento; si todavía no se
+// cargó, cae al cliente que ya tiene el sistema de compras.
+function etqCliente(numero) {
+  const sg = seguimientoPorPedido[numero];
+  return (sg && sg.distribuidor) || clientePorPedido[numero] || '(sin distribuidor cargado)';
+}
+function etqClienteFinal(numero) {
+  const sg = seguimientoPorPedido[numero];
+  return (sg && sg.cliente) || clientePorPedido[numero] || '';
+}
 const etqTxt = (a, b) => String(a || '').localeCompare(String(b || ''), 'es', { sensitivity: 'base', numeric: true });
 
 // Orden de impresión: distribuidor → nº de pedido → estructura → pieza.
@@ -1709,8 +1728,15 @@ async function cargarEtiquetas() {
   }
   piezasCache = data;
   const { data: peds } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_salida').order('numero'));
-  clientePorPedido = {}; salidaPorPedido = {};
+  clientePorPedido = {}; salidaPorPedido = {}; seguimientoPorPedido = {};
   (peds || []).forEach(p => { clientePorPedido[p.numero] = p.cliente; salidaPorPedido[p.numero] = p.fecha_salida; });
+  // Distribuidor / cliente / fecha de salida del export de seguimiento (si la
+  // tabla todavía no existe o está vacía, se usa lo que ya tiene el sistema).
+  const { data: segs } = await obtenerTodasLasFilas(() => sb.from('seguimiento_pedidos').select('pedido_numero, cliente, distribuidor, fecha_salida').order('pedido_numero'));
+  (segs || []).forEach(g => {
+    seguimientoPorPedido[g.pedido_numero] = { distribuidor: g.distribuidor, cliente: g.cliente };
+    if (!salidaPorPedido[g.pedido_numero] && g.fecha_salida) salidaPorPedido[g.pedido_numero] = g.fecha_salida;
+  });
   if (piezasCache.length === 0) {
     aviso.innerHTML = '<div class="aviso info">Todavía no hay piezas cargadas.' + (puedeEscribir() ? ' Subí el archivo en el bloque de arriba.' : ' Pedile a compras que las cargue.') + '</div>';
   }
@@ -1876,19 +1902,65 @@ function etqImprimir(alcance) {
   const ancho = Math.max(30, Number(document.getElementById('etq-ancho').value) || 100);
   const alto = Math.max(20, Number(document.getElementById('etq-alto').value) || 50);
 
-  const etiquetas = filas.map(p => `
+  const etiquetaHTML = p => `
     <div class="etq">
       <div class="l1">${escaparHTML(etqCliente(p.pedido_numero))}</div>
       <div class="l2">Pedido <strong>${p.pedido_numero}</strong></div>
       <div class="l3">${escaparHTML(p.estructura)}</div>
       <div class="l4">${escaparHTML(p.pieza)}</div>
       <div class="cb">${rollo ? svgCodigoBarras(p.idhc_g, 30, Math.min(alto * 0.32, 18)) : svgCodigoBarras(p.idhc_g, 40, 14)}</div>
-    </div>`).join('');
+    </div>`;
+
+  // Las piezas ya vienen ordenadas por distribuidor → pedido; se agrupan por
+  // pedido y cada pedido arranca con su encabezado (título con el número,
+  // distribuidor y cliente al lado, subtítulo) y debajo todos los rótulos.
+  const grupos = [];
+  filas.forEach(p => {
+    const ult = grupos[grupos.length - 1];
+    if (ult && ult.pedido === p.pedido_numero) ult.piezas.push(p);
+    else grupos.push({ pedido: p.pedido_numero, piezas: [p] });
+  });
+  const salidaTxt = n => salidaPorPedido[n] ? ` · Sale ${formatearFechaCorta(salidaPorPedido[n])}` : '';
+  const cuerpo = grupos.map((g, i) => {
+    const dist = escaparHTML(etqCliente(g.pedido)), cli = escaparHTML(etqClienteFinal(g.pedido) || '—');
+    if (rollo) {
+      // En etiquetadora no entra una hoja de encabezado: una etiqueta de portada por pedido.
+      return `<div class="etq portada">
+        <div class="pt">Pedido ${g.pedido}</div>
+        <div class="pl"><span>Distribuidor</span> ${dist}</div>
+        <div class="pl"><span>Cliente</span> ${cli}</div>
+        <div class="ps">${g.piezas.length} piezas${salidaTxt(g.pedido)}</div>
+      </div>` + g.piezas.map(etiquetaHTML).join('');
+    }
+    return `<section class="ped ${i > 0 ? 'nueva' : ''}">
+      <div class="enc">
+        <div class="tit">Pedido <strong>${g.pedido}</strong></div>
+        <div class="dc"><span>Distribuidor</span><b>${dist}</b></div>
+        <div class="dc"><span>Cliente</span><b>${cli}</b></div>
+      </div>
+      <div class="sub">Pedido ${g.pedido} · ${g.piezas.length} piezas${salidaTxt(g.pedido)}</div>
+      <div class="hoja">${g.piezas.map(etiquetaHTML).join('')}</div>
+    </section>`;
+  }).join('');
 
   const css = rollo
     ? `@page { size: ${ancho}mm ${alto}mm; margin: 0; }
-       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 2.5mm; page-break-after: always; overflow: hidden; display: flex; flex-direction: column; }`
+       .etq { width: ${ancho}mm; height: ${alto}mm; padding: 2.5mm; page-break-after: always; overflow: hidden; display: flex; flex-direction: column; }
+       .portada { justify-content: center; gap: 1.5mm; }
+       .pt { font-size: 22pt; font-weight: bold; }
+       .pl { font-size: 11pt; } .pl span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
+       .ps { font-size: 9pt; color: #333; }`
     : `@page { size: A4; margin: 8mm; }
+       .ped.nueva { page-break-before: always; }
+       .enc { display: flex; align-items: stretch; border: 0.4mm solid #000; }
+       .enc > div { padding: 2.5mm 3mm; }
+       .tit { font-size: 20pt; flex: 0 0 auto; border-right: 0.4mm solid #000; display: flex; align-items: center; }
+       .tit strong { margin-left: 2mm; }
+       .dc { flex: 1 1 0; border-right: 0.4mm solid #000; min-width: 0; }
+       .dc:last-child { border-right: 0; }
+       .dc span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
+       .dc b { font-size: 11pt; line-height: 1.15; overflow-wrap: anywhere; }
+       .sub { font-size: 12pt; margin: 2.5mm 0 3mm; padding-bottom: 1.5mm; border-bottom: 0.3mm solid #000; }
        .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
        .etq { height: 56mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; display: flex; flex-direction: column; }`;
 
@@ -1901,7 +1973,7 @@ function etqImprimir(alcance) {
     .l3 { font-size: 9pt; color: #222; line-height: 1.1; max-height: 2.2em; overflow: hidden; word-break: break-all; margin-top: 0.5mm; }
     .l4 { font-size: 11.5pt; font-weight: bold; line-height: 1.1; max-height: 2.2em; overflow: hidden; margin-top: 0.5mm; }
     .cb { margin-top: auto; padding-top: 1mm; }
-  </style></head><body>${rollo ? etiquetas : `<div class="hoja">${etiquetas}</div>`}</body></html>`;
+  </style></head><body>${cuerpo}</body></html>`;
 
   const iframe = document.createElement('iframe');
   iframe.style.cssText = 'position:fixed; right:0; bottom:0; width:0; height:0; border:0;';
@@ -2416,6 +2488,7 @@ async function actualizarFechasSeguimiento() {
   }
 
   const porPedido = {};
+  const seguimientoRows = [];
   registros.forEach(r => {
     const numero = parseInt(r['Pedido']);
     if (!numero) return;
@@ -2424,6 +2497,14 @@ async function actualizarFechasSeguimiento() {
       fecha_ingreso: parsearFechaFlexible(r['FIngreso']),
       fecha_salida: parsearFechaFlexible(r['FSalida']),
     };
+    seguimientoRows.push({
+      pedido_numero: numero,
+      cliente: (r['Cliente'] || '').trim() || null,
+      distribuidor: (r['Distribuidor'] || '').trim() || null,
+      fecha_ingreso: parsearFechaFlexible(r['FIngreso']),
+      fecha_salida: parsearFechaFlexible(r['FSalida']),
+      actualizado_en: new Date().toISOString(),
+    });
   });
   const pares = Object.values(porPedido);
   if (pares.length === 0) {
@@ -2447,8 +2528,14 @@ async function actualizarFechasSeguimiento() {
     return;
   }
 
+  // Distribuidor y cliente de todos los pedidos del archivo (sirve para las
+  // etiquetas de piezas, aunque el pedido todavía no esté en compras).
+  const dedup = {}; seguimientoRows.forEach(g => dedup[g.pedido_numero] = g);
+  const { error: errSeg } = await sb.from('seguimiento_pedidos').upsert(Object.values(dedup), { onConflict: 'pedido_numero' });
+
   await cargarTodo();
   let mensaje = `<div class="aviso ok">Fechas actualizadas en ${coinciden} pedido(s).</div>`;
+  if (errSeg) mensaje += `<div class="aviso error">Las fechas se guardaron, pero no se pudieron guardar distribuidor/cliente para las etiquetas: ${errSeg.message}. Falta crear la tabla "seguimiento_pedidos" en Supabase.</div>`;
   if (sinPedido > 0) {
     mensaje += `<div class="aviso info">${sinPedido} pedido(s) del archivo todavía no existen en el sistema — no se tocan hasta que entren por "Importar del sistema".</div>`;
   }
