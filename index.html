@@ -1902,11 +1902,13 @@ function etqImprimir(alcance) {
   const ancho = Math.max(30, Number(document.getElementById('etq-ancho').value) || 100);
   const alto = Math.max(20, Number(document.getElementById('etq-alto').value) || 50);
 
+  // En hoja A4 la estructura va como subtítulo grande sobre el grupo de
+  // etiquetas del mismo mueble, así que no se repite en cada etiqueta.
   const etiquetaHTML = p => `
     <div class="etq">
       <div class="l1">${escaparHTML(etqCliente(p.pedido_numero))}</div>
       <div class="l2">Pedido <strong>${p.pedido_numero}</strong></div>
-      <div class="l3">${escaparHTML(p.estructura)}</div>
+      ${rollo ? `<div class="l3">${escaparHTML(p.estructura)}</div>` : ''}
       <div class="l4">${escaparHTML(p.pieza)}</div>
       <div class="cb">${rollo ? svgCodigoBarras(p.idhc_g, 30, Math.min(alto * 0.32, 18)) : svgCodigoBarras(p.idhc_g, 40, 14)}</div>
     </div>`;
@@ -1920,6 +1922,16 @@ function etqImprimir(alcance) {
     if (ult && ult.pedido === p.pedido_numero) ult.piezas.push(p);
     else grupos.push({ pedido: p.pedido_numero, piezas: [p] });
   });
+  // Agrupa las piezas de un pedido (ya ordenadas) por estructura / mueble.
+  const porEstructura = piezas => {
+    const out = [];
+    piezas.forEach(p => {
+      const ult = out[out.length - 1];
+      if (ult && ult.estructura === p.estructura) ult.piezas.push(p);
+      else out.push({ estructura: p.estructura, piezas: [p] });
+    });
+    return out;
+  };
   const salidaTxt = n => salidaPorPedido[n] ? ` · Sale ${formatearFechaCorta(salidaPorPedido[n])}` : '';
   const cuerpo = grupos.map((g, i) => {
     const dist = escaparHTML(etqCliente(g.pedido)), cli = escaparHTML(etqClienteFinal(g.pedido) || '—');
@@ -1939,7 +1951,11 @@ function etqImprimir(alcance) {
         <div class="dc"><span>Cliente</span><b>${cli}</b></div>
       </div>
       <div class="sub">Pedido ${g.pedido} · ${g.piezas.length} piezas${salidaTxt(g.pedido)}</div>
-      <div class="hoja">${g.piezas.map(etiquetaHTML).join('')}</div>
+      ${porEstructura(g.piezas).map(m => `
+        <div class="mueble">
+          <div class="mt">${escaparHTML(m.estructura)} <span>· ${m.piezas.length} pieza${m.piezas.length === 1 ? '' : 's'}</span></div>
+          <div class="hoja">${m.piezas.map(etiquetaHTML).join('')}</div>
+        </div>`).join('')}
     </section>`;
   }).join('');
 
@@ -1961,8 +1977,11 @@ function etqImprimir(alcance) {
        .dc span { display: block; font-size: 7.5pt; color: #555; text-transform: uppercase; }
        .dc b { font-size: 11pt; line-height: 1.15; overflow-wrap: anywhere; }
        .sub { font-size: 12pt; margin: 2.5mm 0 3mm; padding-bottom: 1.5mm; border-bottom: 0.3mm solid #000; }
+       .mueble { margin-bottom: 4mm; }
+       .mt { font-size: 15pt; font-weight: bold; padding: 1.5mm 2mm; margin-bottom: 2.5mm; background: #e6e6e6; border-left: 2mm solid #000; overflow-wrap: anywhere; break-after: avoid; page-break-after: avoid; }
+       .mt span { font-size: 10pt; font-weight: normal; color: #333; }
        .hoja { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
-       .etq { height: 56mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; display: flex; flex-direction: column; }`;
+       .etq { height: 46mm; padding: 2mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; display: flex; flex-direction: column; }`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas de piezas</title><style>
     * { box-sizing: border-box; }
