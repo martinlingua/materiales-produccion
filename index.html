@@ -975,7 +975,49 @@ function comparadorMateriales(rubro) {
   };
 }
 
+// Aviso visible cuando hay filtros que pueden esconder pedidos (fechas,
+// proveedor, búsqueda o "Ocultar lo ya cubierto"), con un botón para
+// limpiarlos todos. Se crea solo, justo arriba de la tabla.
+function actualizarAvisoFiltros(rubro) {
+  let cont = document.getElementById('aviso-filtros-' + rubro);
+  if (!cont) {
+    const tabla = document.getElementById('thead-' + rubro).closest('table');
+    cont = document.createElement('div');
+    cont.id = 'aviso-filtros-' + rubro;
+    tabla.parentNode.insertBefore(cont, tabla);
+  }
+  const activos = [];
+  const desde = document.getElementById('filtro-fecha-desde-' + rubro).value;
+  const hasta = document.getElementById('filtro-fecha-hasta-' + rubro).value;
+  if (desde || hasta) {
+    const campo = document.getElementById('filtro-campo-fecha-' + rubro);
+    activos.push(`${campo.options[campo.selectedIndex].text}${desde ? ' desde ' + formatearFechaCorta(desde) : ''}${hasta ? ' hasta ' + formatearFechaCorta(hasta) : ''}`);
+  }
+  const selProv = document.getElementById('proveedor-' + rubro);
+  if (selProv.value) activos.push('proveedor: ' + selProv.options[selProv.selectedIndex].text);
+  if (document.getElementById('filtro-' + rubro).value.trim()) activos.push('búsqueda de texto');
+  if (document.getElementById('ocultar-cubierto-' + rubro).checked) activos.push('ocultando lo ya cubierto');
+  if (activos.length === 0) { cont.style.display = 'none'; cont.innerHTML = ''; return; }
+  cont.style.display = 'block';
+  cont.className = 'aviso';
+  cont.style.cssText = 'display:block; background:#fff4d6; color:#7a5a00; margin:0 0 8px 0;';
+  cont.innerHTML = `⚠ Hay filtros activos que pueden estar ocultando pedidos: <strong>${activos.join(' · ')}</strong>
+    <button class="primario" style="font-size:12px; padding:3px 10px; margin-left:8px;" onclick="limpiarFiltros('${rubro}')">Limpiar filtros</button>`;
+}
+
+function limpiarFiltros(rubro, soloFechas = false) {
+  document.getElementById('filtro-fecha-desde-' + rubro).value = '';
+  document.getElementById('filtro-fecha-hasta-' + rubro).value = '';
+  if (!soloFechas) {
+    document.getElementById('filtro-' + rubro).value = '';
+    document.getElementById('proveedor-' + rubro).value = '';
+    document.getElementById('ocultar-cubierto-' + rubro).checked = false;
+  }
+  renderizarPedidos(rubro);
+}
+
 function renderizarPedidos(rubro) {
+  actualizarAvisoFiltros(rubro);
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
   if (vista === 'material') {
@@ -2511,6 +2553,12 @@ async function importarArchivo() {
   }
   aviso.innerHTML = mensaje;
   archivoInput.value = '';
+  // Un pedido recién importado puede quedar fuera de un rango de fechas
+  // viejo: se limpian los filtros de fecha para no esconderlo.
+  ['herraje', 'insumo'].forEach(r => {
+    document.getElementById('filtro-fecha-desde-' + r).value = '';
+    document.getElementById('filtro-fecha-hasta-' + r).value = '';
+  });
   await cargarTodo();
 }
 
