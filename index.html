@@ -131,6 +131,8 @@
   .pend-num { font-weight: 700; }
   .pend-cero { color: var(--verde); }
   .pend-pos { color: var(--rojo); }
+  .pend-camino { color: #b8860b; }
+  .tag-camino { display: inline-block; font-size: 11px; font-weight: 500; background: #fff0b3; color: #7a5a00; border-radius: 3px; padding: 1px 6px; margin-top: 2px; }
 
   .panel {
     background: var(--blanco);
@@ -226,6 +228,7 @@
     <button data-tab="etiquetas" class="tab-btn" onclick="cambiarTab('etiquetas')">Etiquetas de piezas</button>
     <button data-tab="importar" class="tab-btn solo-comprador" onclick="cambiarTab('importar')">Importar del sistema</button>
     <button data-tab="stock" class="tab-btn solo-comprador" onclick="cambiarTab('stock')">Actualizar stock físico</button>
+    <button data-tab="camino" id="btn-tab-camino" class="tab-btn solo-comprador" onclick="cambiarTab('camino')">Materiales en camino</button>
     <button data-tab="catalogo" class="tab-btn solo-comprador" onclick="cambiarTab('catalogo')">Catálogo / factores</button>
   </nav>
 
@@ -370,6 +373,68 @@
         <table class="pedidos"><thead>
           <tr><th>Fecha</th><th>Código</th><th>Material</th><th>Cantidad</th><th>Pedido</th><th>Cargado por</th></tr>
         </thead><tbody id="tbody-rec-historial"></tbody></table>
+      </div>
+    </section>
+
+    <!-- MATERIALES EN CAMINO -->
+    <section id="sec-camino" class="seccion">
+      <div class="panel">
+        <h2>Cargar mercadería en camino</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Lo comprado que todavía no llegó. Se suma aparte del stock: en Herrajes e Insumos
+          aparece en <strong style="color:#b8860b;">amarillo</strong> lo que cubre. Cuando llegue, tildalo acá abajo.
+        </p>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="cam-rubro" onchange="camSeleccionar(null); camBuscar()">
+              <option value="insumo">Insumo</option>
+              <option value="herraje">Herraje</option>
+            </select>
+          </label>
+          <label>Material
+            <input type="text" id="cam-busqueda" placeholder="Código o nombre..." oninput="camSeleccionar(null); camBuscar()">
+          </label>
+          <label id="cam-cantidad-label">Cantidad
+            <input type="number" id="cam-cantidad" min="0" step="0.01" oninput="camPrevia()">
+          </label>
+          <label>Llega aprox. (opcional)
+            <input type="date" id="cam-fecha">
+          </label>
+          <label>Proveedor / N° orden de compra / aclaración
+            <input type="text" id="cam-nota" placeholder="Ej: Arauco OC 1234 — viene en camión del jueves" style="min-width:280px;">
+          </label>
+          <button class="primario" onclick="camAgregar()">Agregar</button>
+        </div>
+        <div id="cam-sugerencias" style="font-size:12px; color:var(--gris-claro); max-height:120px; overflow:auto;"></div>
+        <div id="cam-previa" style="font-size:13px; color:var(--gris-oscuro); font-weight:500;"></div>
+        <div id="cam-aviso"></div>
+      </div>
+
+      <div class="panel">
+        <h2>En camino ahora</h2>
+        <div class="fila-form">
+          <label>Rubro
+            <select id="cam-filtro-rubro" onchange="renderizarCamino()">
+              <option value="todos">Todos</option>
+              <option value="herraje">Herraje</option>
+              <option value="insumo">Insumo</option>
+            </select>
+          </label>
+          <label>Buscar
+            <input type="text" id="cam-filtro-texto" placeholder="Código o nombre..." oninput="renderizarCamino()">
+          </label>
+        </div>
+        <table class="pedidos"><thead>
+          <tr><th>Llegó</th><th>Código</th><th>Material</th><th>Cantidad</th><th>Llega aprox.</th><th>Cargado</th><th>Proveedor / OC / aclaración</th><th></th></tr>
+        </thead><tbody id="tbody-camino"></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h2>Llegadas de los últimos 30 días</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">Por si tildaste una por error: "Deshacer" la vuelve a poner en camino.</p>
+        <table class="pedidos"><thead>
+          <tr><th>Llegó el</th><th>Código</th><th>Material</th><th>Cantidad</th><th></th></tr>
+        </thead><tbody id="tbody-camino-recibidos"></tbody></table>
       </div>
     </section>
 
@@ -653,6 +718,7 @@ async function cerrarSesion() {
   document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
   document.getElementById('banner-importacion').style.display = 'none';
   piezasCache = []; etqSeleccion.clear(); etqVisibles = [];
+  enCaminoAbiertos = []; enCaminoPorMaterial = {};
   document.getElementById('etq-tbody').innerHTML = '';
   document.getElementById('app').style.display = 'none';
   document.getElementById('pantalla-login').style.display = 'flex';
@@ -668,6 +734,7 @@ function cambiarTab(tab) {
   document.getElementById('sec-' + tab).classList.add('activa');
   if (tab === 'catalogo') cargarCatalogo();
   if (tab === 'recepcion') cargarHistorialRecepciones();
+  if (tab === 'camino') renderizarCamino();
   if (tab === 'etiquetas') cargarEtiquetas();
 }
 
@@ -801,8 +868,10 @@ async function cargarTodo() {
     return;
   }
 
+  await cargarEnCaminoDatos();
   datosPendientes.herraje = pend.filter(p => p.material_rubro === 'herraje');
   datosPendientes.insumo = pend.filter(p => p.material_rubro === 'insumo');
+  asignarEnCamino();
   estadosPedidos = {};
   estados.forEach(e => estadosPedidos[e.numero] = e);
 
@@ -849,7 +918,277 @@ async function cargarTodo() {
   poblarProveedores('insumo');
   renderizarPedidos('herraje');
   renderizarPedidos('insumo');
+  actualizarBadgeCamino();
+  if (tabActiva === 'camino') renderizarCamino();
   cargarUltimaImportacion();
+}
+
+// ---------------------------------------------------------------------
+// MERCADERÍA EN CAMINO
+// Va aparte del stock: no toca conteos ni recepciones. Se reparte entre
+// los pedidos con pendiente igual que el stock (el más viejo primero) y
+// solo sirve para pintar en amarillo lo que cubre. Cuando llega se
+// destilda a mano en la pestaña "Materiales en camino".
+// ---------------------------------------------------------------------
+let enCaminoAbiertos = [];
+let enCaminoPorMaterial = {};   // 'codigo|rubro' -> { total, aviso }
+
+async function cargarEnCaminoDatos() {
+  enCaminoAbiertos = [];
+  enCaminoPorMaterial = {};
+  const { data, error } = await obtenerTodasLasFilas(() => sb.from('en_camino').select('*').eq('recibido', false).order('id'));
+  if (error) { console.warn('en_camino no disponible (¿falta correr sql_en_camino.sql?):', error.message); return; }
+  enCaminoAbiertos = data || [];
+  if (enCaminoAbiertos.length === 0) return;
+
+  // Aviso "¿ya llegó?": si después de cargar la mercadería en camino hubo
+  // un conteo/ajuste de stock o una recepción general de ese material, el
+  // stock nuevo podría ya incluirla (el sistema no puede saberlo).
+  const desde = enCaminoAbiertos.reduce((m, r) => Date.parse(r.creado_en) < Date.parse(m) ? r.creado_en : m, enCaminoAbiertos[0].creado_en);
+  const ultimo = {};
+  const guardar = filas => (filas || []).forEach(r => {
+    const k = r.material_codigo + '|' + r.material_rubro;
+    if (!ultimo[k] || Date.parse(r.fecha) > Date.parse(ultimo[k])) ultimo[k] = r.fecha;
+  });
+  const [rc, rr] = await Promise.all([
+    obtenerTodasLasFilas(() => sb.from('conteos_stock').select('material_codigo, material_rubro, fecha').gte('fecha', desde).order('id')),
+    obtenerTodasLasFilas(() => sb.from('recepciones').select('material_codigo, material_rubro, fecha').is('pedido_numero', null).gte('fecha', desde).order('id')),
+  ]);
+  guardar(rc.data); guardar(rr.data);
+
+  enCaminoAbiertos.forEach(r => {
+    const k = r.material_codigo + '|' + r.material_rubro;
+    r._aviso = !!ultimo[k] && Date.parse(ultimo[k]) > Date.parse(r.creado_en);
+    if (!enCaminoPorMaterial[k]) enCaminoPorMaterial[k] = { total: 0, aviso: false };
+    enCaminoPorMaterial[k].total += Number(r.cantidad);
+    enCaminoPorMaterial[k].aviso = enCaminoPorMaterial[k].aviso || r._aviso;
+  });
+}
+
+// Reparte lo que hay en camino entre las filas con pendiente de cada
+// material (mismo orden que el stock: priorizados, fecha pactada, pedido).
+// No se reparte a pedidos ya despachados. Deja _camino y _comprar en cada fila.
+function asignarEnCamino() {
+  ['herraje', 'insumo'].forEach(rubro => {
+    const filas = datosPendientes[rubro];
+    filas.forEach(f => { f._camino = 0; f._comprar = Number(f.pendiente); });
+    const restante = {};
+    enCaminoAbiertos.filter(r => r.material_rubro === rubro)
+      .forEach(r => { restante[r.material_codigo] = (restante[r.material_codigo] || 0) + Number(r.cantidad); });
+    if (Object.keys(restante).length === 0) return;
+    filas
+      .filter(f => Number(f.pendiente) > 0 && !esDespachado(f.fecha_salida) && restante[f.material_codigo] > 0)
+      .sort((a, b) => (b.prioridad_manual ? 1 : 0) - (a.prioridad_manual ? 1 : 0)
+        || (a.fecha_pactada || '9999').localeCompare(b.fecha_pactada || '9999')
+        || (a.pedido_numero - b.pedido_numero))
+      .forEach(f => {
+        const usa = Math.min(restante[f.material_codigo], Number(f.pendiente));
+        f._camino = usa;
+        f._comprar = Number(f.pendiente) - usa;
+        restante[f.material_codigo] -= usa;
+      });
+  });
+}
+
+// Color y etiqueta de una celda de pendiente: verde = cubierto, amarillo =
+// cubierto solo por lo que está en camino, rojo = hay que comprar.
+function estadoPendiente(pend, camino, aviso) {
+  pend = Number(pend) || 0; camino = Number(camino) || 0;
+  if (pend <= 0.005) return { cls: 'pend-cero', extra: '' };
+  const marca = aviso ? '⚠ ' : '';
+  if (camino > 0.005 && pend - camino <= 0.005) {
+    return { cls: 'pend-camino', extra: `<div class="tag-camino" title="Cubierto por mercadería en camino. Verificá que realmente llegue.">${marca}en camino</div>` };
+  }
+  if (camino > 0.005) {
+    return { cls: 'pend-pos', extra: `<div class="tag-camino" title="Una parte está cubierta por mercadería en camino; el resto hay que comprarlo.">${marca}${redondear2(camino)} en camino</div>` };
+  }
+  return { cls: 'pend-pos', extra: '' };
+}
+
+function actualizarLeyendaCamino(rubro) {
+  let cont = document.getElementById('leyenda-camino-' + rubro);
+  if (!cont) {
+    const tabla = document.getElementById('thead-' + rubro).closest('table');
+    cont = document.createElement('div');
+    cont.id = 'leyenda-camino-' + rubro;
+    cont.style.cssText = 'font-size:12px; color:var(--gris-claro); margin:0 0 8px 0;';
+    tabla.parentNode.insertBefore(cont, tabla);
+  }
+  const hay = enCaminoAbiertos.some(r => r.material_rubro === rubro);
+  cont.style.display = hay ? 'block' : 'none';
+  cont.innerHTML = hay
+    ? '<span style="color:var(--verde); font-weight:700;">● Cubierto</span> &nbsp; <span style="color:#b8860b; font-weight:700;">● Cubierto por mercadería en camino (verificá que llegue)</span> &nbsp; <span style="color:var(--rojo); font-weight:700;">● A comprar</span>'
+    : '';
+}
+
+function actualizarBadgeCamino() {
+  const btn = document.getElementById('btn-tab-camino');
+  if (!btn) return;
+  const n = enCaminoAbiertos.filter(r => r._aviso).length;
+  btn.textContent = 'Materiales en camino' + (n > 0 ? ` (${n} ⚠)` : '');
+}
+
+let camSugeridos = [];
+let camMaterialSel = null;
+
+function camBuscar() {
+  const rubro = document.getElementById('cam-rubro').value;
+  const palabras = normalizarTexto(document.getElementById('cam-busqueda').value).split(/\s+/).filter(Boolean);
+  const cont = document.getElementById('cam-sugerencias');
+  if (palabras.length === 0 || camMaterialSel) { cont.innerHTML = ''; return; }
+  camSugeridos = materialesCache
+    .filter(m => m.rubro === rubro)
+    .filter(m => { const t = normalizarTexto(m.codigo + ' ' + (m.nombre || '')); return palabras.every(p => t.includes(p)); })
+    .slice(0, 10);
+  cont.innerHTML = camSugeridos.map((m, i) =>
+    `<div style="cursor:pointer; padding:3px 0;" onclick="camElegir(${i})">${m.codigo} — ${escaparHTML(m.nombre || '')} (${escaparHTML(m.proveedor || 'sin proveedor')})</div>`
+  ).join('') || '<div>Sin coincidencias</div>';
+}
+
+function camElegir(i) {
+  const m = camSugeridos[i];
+  if (!m) return;
+  camSeleccionar(m);
+  document.getElementById('cam-busqueda').value = `${m.codigo} — ${m.nombre}`;
+  document.getElementById('cam-sugerencias').innerHTML = '';
+}
+
+function camSeleccionar(m) {
+  camMaterialSel = m;
+  const label = document.getElementById('cam-cantidad-label');
+  const valorPrevio = document.getElementById('cam-cantidad') ? document.getElementById('cam-cantidad').value : '';
+  const conConversion = m && m.unidad_conteo && Number(m.factor_conversion) !== 1;
+  const unidad = conConversion ? m.unidad_conteo : (m && m.umed ? m.umed : '');
+  label.innerHTML = `Cantidad${unidad ? ` (en <strong>${escaparHTML(unidad)}</strong>)` : ''}
+    <input type="number" id="cam-cantidad" min="0" step="0.01" oninput="camPrevia()" value="${valorPrevio}">`;
+  camPrevia();
+}
+
+function camPrevia() {
+  const previa = document.getElementById('cam-previa');
+  const cant = parseFloat(document.getElementById('cam-cantidad').value);
+  if (!camMaterialSel || !Number.isFinite(cant) || cant <= 0) { previa.textContent = ''; return; }
+  const factor = Number(camMaterialSel.factor_conversion) || 1;
+  previa.textContent = factor !== 1 ? `= ${redondear2(cant * factor)} ${camMaterialSel.umed || ''}` : '';
+}
+
+async function camAgregar() {
+  const aviso = document.getElementById('cam-aviso');
+  aviso.innerHTML = '';
+  if (!camMaterialSel) { aviso.innerHTML = '<div class="aviso error">Elegí un material de la lista de sugerencias.</div>'; return; }
+  const cargada = parseFloat(document.getElementById('cam-cantidad').value);
+  if (!cargada || cargada <= 0) { aviso.innerHTML = '<div class="aviso error">Ingresá una cantidad mayor a 0.</div>'; return; }
+  const factor = Number(camMaterialSel.factor_conversion) || 1;
+  const { error } = await sb.from('en_camino').insert({
+    material_codigo: camMaterialSel.codigo,
+    material_rubro: camMaterialSel.rubro,
+    cantidad: cargada * factor,
+    cantidad_cargada: cargada,
+    factor_aplicado: factor,
+    fecha_estimada: document.getElementById('cam-fecha').value || null,
+    nota: document.getElementById('cam-nota').value.trim() || null,
+    usuario_id: perfilActual.id,
+  });
+  if (error) { aviso.innerHTML = `<div class="aviso error">No se pudo guardar: ${escaparHTML(error.message)}</div>`; return; }
+  aviso.innerHTML = '<div class="aviso ok">Agregado a "En camino ahora".</div>';
+  ['cam-cantidad', 'cam-fecha', 'cam-nota', 'cam-busqueda'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('cam-previa').textContent = '';
+  camSeleccionar(null);
+  await cargarTodo();
+}
+
+function camTextoCantidad(r) {
+  const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+  const factor = Number(r.factor_aplicado) || 1;
+  return factor !== 1 && r.cantidad_cargada
+    ? `${redondear2(r.cantidad_cargada)} ${escaparHTML(mat.unidad_conteo || '')} (= ${redondear2(r.cantidad)} ${escaparHTML(mat.umed || '')})`
+    : `${redondear2(r.cantidad)} ${escaparHTML(mat.umed || '')}`;
+}
+
+function renderizarCamino() {
+  const rubro = document.getElementById('cam-filtro-rubro').value;
+  const palabras = normalizarTexto(document.getElementById('cam-filtro-texto').value).split(/\s+/).filter(Boolean);
+  const tbody = document.getElementById('tbody-camino');
+  const hoy = fechaLocalISO(new Date());
+  const filas = enCaminoAbiertos
+    .filter(r => rubro === 'todos' || r.material_rubro === rubro)
+    .filter(r => {
+      const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+      const t = normalizarTexto(r.material_codigo + ' ' + (mat.nombre || '') + ' ' + (r.nota || ''));
+      return palabras.every(p => t.includes(p));
+    })
+    .sort((a, b) => (a.fecha_estimada || '9999').localeCompare(b.fecha_estimada || '9999') || (a.id - b.id));
+
+  tbody.innerHTML = filas.length === 0
+    ? '<tr><td colspan="8" style="color:var(--gris-claro);">No hay mercadería en camino.</td></tr>'
+    : filas.map(r => {
+        const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+        const atrasada = r.fecha_estimada && r.fecha_estimada < hoy;
+        const cargado = new Date(r.creado_en).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+        return `<tr>
+          <td><input type="checkbox" onchange="camMarcarLlego(${r.id}, this)" title="Tildalo cuando la mercadería llegó"></td>
+          <td>${r.material_codigo}</td>
+          <td>${escaparHTML(mat.nombre || '(material no encontrado)')}
+            ${r._aviso ? '<div class="tag-camino" title="Después de cargar esto hubo un conteo/ajuste de stock o una recepción de este material: puede que el stock ya incluya esta mercadería.">⚠ Hubo conteo o recepción después de cargarla: ¿ya llegó?</div>' : ''}</td>
+          <td>${camTextoCantidad(r)}</td>
+          <td>${r.fecha_estimada || '<span style="color:var(--gris-claro);">—</span>'}${atrasada ? ' <span style="color:var(--rojo); font-weight:700;">atrasada</span>' : ''}</td>
+          <td>${cargado}</td>
+          <td>${escaparHTML(r.nota || '')}${r.nota ? '' : '<span style="color:var(--gris-claro);">—</span>'}</td>
+          <td style="white-space:nowrap;"><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camEditarNota(${r.id})" title="Cambiar el proveedor, la orden de compra o la aclaración">Editar nota</button>
+            <button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camEliminar(${r.id})" title="Se cargó por error: la borra sin contarla como llegada">Eliminar</button></td>
+        </tr>`;
+      }).join('');
+  cargarRecibidosCamino();
+}
+
+async function camMarcarLlego(id, chk) {
+  const r = enCaminoAbiertos.find(x => x.id === id);
+  const mat = r && materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro);
+  if (!confirm(`¿Ya llegó ${mat ? mat.nombre : 'esta mercadería'}?\n\nDeja de contar como "en camino". Si todavía no cargaste su stock (recepción o archivo de stock), cargalo para que no vuelva a figurar como faltante.`)) {
+    chk.checked = false;
+    return;
+  }
+  const { error } = await sb.from('en_camino').update({ recibido: true, recibido_en: new Date().toISOString() }).eq('id', id);
+  if (error) { alert('No se pudo guardar: ' + error.message); chk.checked = false; return; }
+  await cargarTodo();
+}
+
+async function camEditarNota(id) {
+  const r = enCaminoAbiertos.find(x => x.id === id);
+  if (!r) return;
+  const nueva = prompt('Proveedor / N° de orden de compra / aclaración:', r.nota || '');
+  if (nueva === null) return;
+  const { error } = await sb.from('en_camino').update({ nota: nueva.trim() || null }).eq('id', id);
+  if (error) { alert('No se pudo guardar: ' + error.message); return; }
+  await cargarTodo();
+}
+
+async function camEliminar(id) {
+  if (!confirm('¿Eliminar esta carga? Se usa si la cargaste por error. Si la mercadería llegó, tildala como "Llegó" en lugar de borrarla.')) return;
+  const { error } = await sb.from('en_camino').delete().eq('id', id);
+  if (error) { alert('No se pudo eliminar: ' + error.message); return; }
+  await cargarTodo();
+}
+
+async function camDeshacer(id) {
+  const { error } = await sb.from('en_camino').update({ recibido: false, recibido_en: null }).eq('id', id);
+  if (error) { alert('No se pudo deshacer: ' + error.message); return; }
+  await cargarTodo();
+}
+
+async function cargarRecibidosCamino() {
+  const tbody = document.getElementById('tbody-camino-recibidos');
+  const desde = new Date(Date.now() - 30 * 86400000).toISOString();
+  const { data, error } = await sb.from('en_camino').select('*').eq('recibido', true).gte('recibido_en', desde).order('recibido_en', { ascending: false }).limit(100);
+  if (error) { tbody.innerHTML = ''; return; }
+  tbody.innerHTML = (data || []).length === 0
+    ? '<tr><td colspan="5" style="color:var(--gris-claro);">Nada en los últimos 30 días.</td></tr>'
+    : data.map(r => {
+        const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+        const f = new Date(r.recibido_en).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+        return `<tr><td>${f}</td><td>${r.material_codigo}</td><td>${escaparHTML(mat.nombre || '')}</td><td>${camTextoCantidad(r)}</td>
+          <td><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camDeshacer(${r.id})">Deshacer</button></td></tr>`;
+      }).join('');
 }
 
 function redondear2(n) {
@@ -1018,6 +1357,7 @@ function limpiarFiltros(rubro, soloFechas = false) {
 
 function renderizarPedidos(rubro) {
   actualizarAvisoFiltros(rubro);
+  actualizarLeyendaCamino(rubro);
   const vista = document.getElementById('vista-' + rubro).value;
   const thead = document.getElementById('thead-' + rubro);
   if (vista === 'material') {
@@ -1091,12 +1431,14 @@ function renderizarPorPedido(rubro) {
           proveedor: m.proveedor,
           requerido: 0,
           pendiente: 0,
+          camino: 0,
           reemplazadoPor: m.reemplazado_por || null,
           ignorado: !!m.ignorado,
         };
       }
       porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
       porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
+      porMaterial[m.material_codigo].camino += Number(m._camino || 0);
     });
     const totalesTab = Object.values(porMaterial);
     const pendientesTab = totalesTab.filter(m => m.pendiente > 0).length;
@@ -1136,12 +1478,12 @@ function renderizarPorPedido(rubro) {
     const filasMat = Object.entries(porMaterial)
       .sort(([ca, a], [cb, b]) => cmpMat({ ...a, codigo: Number(ca) }, { ...b, codigo: Number(cb) }))
       .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
-      .map(([codigo, m]) => `
+      .map(([codigo, m]) => { const ep = estadoPendiente(m.pendiente, m.camino, (enCaminoPorMaterial[codigo + '|' + rubro] || {}).aviso); return `
       <tr>
         <td>${codigo}</td>
         <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}${m.ignorado ? ' <span style="color:var(--gris-claro);font-size:12px;">→ ignorado (no es faltante)</span>' : ''}</td>
         <td>${redondear2(m.requerido)}</td>
-        <td class="${m.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(m.pendiente)}</td>
+        <td class="${ep.cls} pend-num">${redondear2(m.pendiente)}${ep.extra}</td>
         <td>${m.proveedor || ''}</td>
         <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (pedidoCerrado
           ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
@@ -1154,7 +1496,7 @@ function renderizarPorPedido(rubro) {
                     onclick="event.stopPropagation(); ignorarMaterial(${numero}, '${rubro}', ${codigo})"
                     title="No se envía o no hace falta: deja de contar como faltante">Ignorar</button>`)}</td>
       </tr>
-    `).join('');
+    `; }).join('');
 
     const botones = pedidoCerrado
       ? `<button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px;"
@@ -1233,11 +1575,13 @@ function renderizarPorMaterial(rubro) {
         cerrado: !!fila._cerrado,
         requerido: 0,
         pendiente: 0,
+        camino: 0,
         prioridad: false,
       };
     }
     grupo.pedidos[fila.pedido_numero].requerido += Number(fila.cantidad_requerida);
     grupo.pedidos[fila.pedido_numero].pendiente += Number(fila.pendiente);
+    grupo.pedidos[fila.pedido_numero].camino += Number(fila._camino || 0);
     grupo.pedidos[fila.pedido_numero].prioridad = grupo.pedidos[fila.pedido_numero].prioridad || !!fila.prioridad_manual;
   });
 
@@ -1255,6 +1599,9 @@ function renderizarPorMaterial(rubro) {
       .filter(([, p]) => (!ocultarCubierto || p.pendiente > 0) && pasaFiltroFecha(rubro, p.fecha_ingreso, p.fecha_pactada, p.fecha_salida));
     if (pedidosDelMaterial.length === 0) return;
     const pendienteTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.pendiente, 0);
+    const caminoTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.camino, 0);
+    const infoCamino = enCaminoPorMaterial[codigo + '|' + rubro];
+    const epTotal = estadoPendiente(pendienteTotal, caminoTotal, infoCamino && infoCamino.aviso);
 
     const trMat = document.createElement('tr');
     trMat.className = 'fila-pedido';
@@ -1266,8 +1613,8 @@ function renderizarPorMaterial(rubro) {
       <td><strong>${codigo}</strong></td>
       <td>${g.nombre || ''}</td>
       <td>${g.proveedor || ''}</td>
-      <td class="${pendienteTotal > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(pendienteTotal)}</td>
-      <td class="pend-num" title="Stock disponible antes de repartirlo entre los pedidos">${g.stock === null ? '<span style="color:var(--gris-claro);">—</span>' : '<strong>' + redondear2(g.stock) + '</strong>'}</td>
+      <td class="${epTotal.cls} pend-num">${redondear2(pendienteTotal)}${epTotal.extra}</td>
+      <td class="pend-num" title="Stock disponible antes de repartirlo entre los pedidos">${g.stock === null ? '<span style="color:var(--gris-claro);">—</span>' : '<strong>' + redondear2(g.stock) + '</strong>'}${infoCamino ? `<div class="tag-camino" title="Comprado, todavía no llegó. No está incluido en el stock.">+${redondear2(infoCamino.total)} en camino</div>` : ''}</td>
       <td>${pedidosDelMaterial.length}</td>
       <td style="white-space:nowrap;">${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
               onclick="event.stopPropagation(); ajustarStock(${codigo}, '${rubro}')"
@@ -1277,13 +1624,13 @@ function renderizarPorMaterial(rubro) {
 
     const filasPedido = pedidosDelMaterial
       .sort((a, b) => (a[1].fecha_salida || a[1].fecha_pactada || '').localeCompare(b[1].fecha_salida || b[1].fecha_pactada || ''))
-      .map(([numero, p]) => `
+      .map(([numero, p]) => { const epP = estadoPendiente(p.pendiente, p.camino); return `
         <tr>
           <td>${numero}</td>
           <td>${p.cliente || ''}</td>
           <td>${p.fecha_salida || ''}</td>
           <td>${redondear2(p.requerido)}</td>
-          <td class="${p.pendiente > 0 ? 'pend-pos' : 'pend-cero'} pend-num">${redondear2(p.pendiente)}</td>
+          <td class="${epP.cls} pend-num">${redondear2(p.pendiente)}${epP.extra}</td>
           <td>
             ${p.cerrado
               ? (esDespachado(p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
@@ -1306,7 +1653,7 @@ function renderizarPorMaterial(rubro) {
             `}
           </td>
         </tr>
-      `).join('');
+      `; }).join('');
 
     const trDetalle = document.createElement('tr');
     trDetalle.className = 'detalle';
@@ -1623,8 +1970,12 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
     const prov = f.proveedor || '(sin proveedor)';
     if (!porProveedor[prov]) porProveedor[prov] = {};
     const g = porProveedor[prov];
-    if (!g[f.material_codigo]) g[f.material_codigo] = { nombre: f.material_nombre, umed: f.umed, faltante: 0, pedidos: {} };
+    if (!g[f.material_codigo]) g[f.material_codigo] = { nombre: f.material_nombre, umed: f.umed, faltante: 0, camino: 0, comprar: 0, pedidos: {} };
+    // Faltante total = pendiente real; en camino = lo ya comprado que lo cubre;
+    // a comprar = la diferencia.
     g[f.material_codigo].faltante += Number(f.pendiente);
+    g[f.material_codigo].camino += Number(f._camino || 0);
+    g[f.material_codigo].comprar += Number(f._comprar ?? f.pendiente);
     const ped = g[f.material_codigo].pedidos;
     if (!ped[f.pedido_numero]) ped[f.pedido_numero] = { cant: 0, salida: f.fecha_salida };
     ped[f.pedido_numero].cant += Number(f.pendiente);
@@ -1639,16 +1990,23 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
       const pedidos = Object.entries(m.pedidos)
         .sort((a, b) => (a[1].salida || '9999').localeCompare(b[1].salida || '9999') || (a[0] - b[0]))
         .map(([n, p]) => `${n} (${redondear2(p.cant)})`).join(', ');
+      // Detalle de lo que ya está en camino (proveedor / orden de compra / aclaración).
+      const detalleCamino = enCaminoAbiertos
+        .filter(r => r.material_rubro === rubro && String(r.material_codigo) === String(codigo))
+        .map(r => `${redondear2(r.cantidad)} ${m.umed || ''}${r.nota ? ' — ' + r.nota : ''}${r.fecha_estimada ? ' (llega ' + r.fecha_estimada + ')' : ''}`);
+      const u = escaparHTML(m.umed || '');
       return `<tr>
         <td class="chk"></td>
         <td>${escaparHTML(codigo)}</td>
-        <td>${escaparHTML(m.nombre)}</td>
-        <td class="num">${redondear2(m.faltante)} ${escaparHTML(m.umed || '')}</td>
+        <td>${escaparHTML(m.nombre)}${detalleCamino.length ? `<div class="cam">En camino: ${escaparHTML(detalleCamino.join(' · '))}</div>` : ''}</td>
+        <td class="num">${redondear2(m.faltante)} ${u}</td>
+        <td class="num cam-n">${m.camino > 0.005 ? redondear2(m.camino) + ' ' + u : '—'}</td>
+        <td class="num ${m.comprar > 0.005 ? 'comprar' : 'cubierto'}">${m.comprar > 0.005 ? redondear2(m.comprar) + ' ' + u : '0'}</td>
         <td class="ped">${escaparHTML(pedidos)}</td>
       </tr>`;
     }).join('');
     return `<h2>${escaparHTML(prov)} <span>(${mats.length} material${mats.length === 1 ? '' : 'es'})</span></h2>
-      <table><thead><tr><th class="chk"></th><th>Código</th><th>Material</th><th>Falta</th><th>Pedidos (cantidad)</th></tr></thead>
+      <table><thead><tr><th class="chk"></th><th>Código</th><th>Material</th><th>Faltante total</th><th>En camino</th><th>A comprar</th><th>Pedidos (faltante)</th></tr></thead>
       <tbody>${filasHTML}</tbody></table>`;
   }).join('');
 
@@ -1669,8 +2027,12 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
     table { table-layout: fixed; }
     th.chk, td.chk { width: 16px; }
     th:nth-child(2) { width: 52px; }
-    th:nth-child(4) { width: 80px; }
-    th:nth-child(5) { width: 30%; }
+    th:nth-child(4), th:nth-child(5), th:nth-child(6) { width: 70px; }
+    th:nth-child(7) { width: 24%; }
+    .cam { font-size: 10px; color: #7a5a00; font-weight: normal; margin-top: 2px; }
+    td.cam-n { color: #7a5a00; }
+    td.cubierto { color: #888; font-weight: normal; }
+    td.comprar { background: #fde3e3; }
     .vacio { margin-top: 20px; color: #666; }
   </style></head><body>
   <h1>Lista de faltantes — ${nombreRubro}</h1>
@@ -1687,7 +2049,7 @@ function imprimirFaltantes(rubro) {
   }
   const filtroTexto = (document.getElementById('filtro-' + rubro).value || '').toLowerCase();
   const filas = filtrarPorProveedor(rubro, datosPendientes[rubro]).filter(f => {
-    if (!(Number(f.pendiente) > 0)) return false;
+    if (!(Number(f.pendiente) > 0.005)) return false;
     const base = estadosPedidos[f.pedido_numero] || { estado: 'en_produccion' };
     const ef = estadoEfectivo(base.estado, f.fecha_salida);
     if (filtroEstado === 'semana' ? ef !== 'en_produccion' : (filtroEstado !== 'todos' && ef !== filtroEstado)) return false;
