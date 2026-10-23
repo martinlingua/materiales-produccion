@@ -1158,15 +1158,90 @@ function renderizarCamino() {
   cargarRecibidosCamino();
 }
 
+// Ventana de "¿llegó?": permite indicar cuánto llegó (entregas parciales) y si
+// además hay que sumarlo al stock (registrar recepción) o si el stock ya lo
+// incluye (archivo de stock cargado después de que llegó).
+function camPreguntarLlegada(r, mat) {
+  return new Promise(resolve => {
+    const factor = Number(r.factor_aplicado) || 1;
+    const cargada = Number(r.cantidad_cargada != null ? r.cantidad_cargada : r.cantidad / factor);
+    const unidad = factor !== 1 ? (mat.unidad_conteo || '') : (mat.umed || '');
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:8px;padding:20px;max-width:500px;width:92%;font-size:14px;">
+      <h3 style="margin:0 0 8px;">¿Llegó esta mercadería?</h3>
+      <div><strong>${escaparHTML(mat.nombre || '')}</strong>
+        <div style="color:var(--gris-claro); font-size:12px;">${escaparHTML(r.nota || '')}</div>
+        <div>En camino: ${camTextoCantidad(r)}</div></div>
+      <label style="display:block; margin:12px 0 2px;">Cantidad que llegó (en ${escaparHTML(unidad)})
+        <input type="number" id="cam-llego-cant" min="0" step="0.01" value="${redondear2(cargada)}" style="width:110px;"></label>
+      <div style="font-size:12px; color:var(--gris-claro);">Si llegó menos, el resto sigue en camino.</div>
+      <div id="cam-llego-err" style="color:var(--rojo); font-size:12px; margin-top:6px;"></div>
+      <div style="margin-top:14px; display:flex; flex-direction:column; gap:8px;">
+        <button class="primario" id="cam-m-rec" title="Suma lo que llegó al stock y lo saca de 'en camino'">Sí, llegó: sumarlo al stock (registrar recepción)</button>
+        <button class="primario" id="cam-m-solo" style="background:var(--gris-claro);" title="Solo lo saca de 'en camino'; no toca el stock">Sí, llegó, pero el stock ya lo incluye (no registrar recepción)</button>
+        <button class="primario" id="cam-m-no" style="background:#fff; color:var(--gris-oscuro); border:1px solid var(--gris-claro);">Cancelar</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const cerrar = valor => { ov.remove(); resolve(valor); };
+    const leer = accion => {
+      const cant = parseFloat(document.getElementById('cam-llego-cant').value);
+      if (!(cant > 0) || cant > cargada + 0.005) {
+        document.getElementById('cam-llego-err').textContent = `Ingresá una cantidad mayor a 0 y no mayor a ${redondear2(cargada)}.`;
+        return;
+      }
+      cerrar({ accion, cant });
+    };
+    document.getElementById('cam-m-rec').onclick = () => leer('recepcion');
+    document.getElementById('cam-m-solo').onclick = () => leer('solo');
+    document.getElementById('cam-m-no').onclick = () => cerrar(null);
+  });
+}
+
 async function camMarcarLlego(id, chk) {
   const r = enCaminoAbiertos.find(x => x.id === id);
-  const mat = r && materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro);
-  if (!confirm(`¿Ya llegó ${mat ? mat.nombre : 'esta mercadería'}?\n\nDeja de contar como "en camino". Si todavía no cargaste su stock (recepción o archivo de stock), cargalo para que no vuelva a figurar como faltante.`)) {
-    chk.checked = false;
+  if (!r) { chk.checked = false; return; }
+  const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+  const dec = await camPreguntarLlegada(r, mat);
+  if (!dec) { chk.checked = false; return; }
+
+  const factor = Number(r.factor_aplicado) || 1;
+  const cargada = Number(r.cantidad_cargada != null ? r.cantidad_cargada : r.cantidad / factor);
+  const completa = dec.cant >= cargada - 0.005;
+  const ahora = new Date().toISOString();
+
+  // 1) Si corresponde, se suma al stock como recepción general.
+  if (dec.accion === 'recepcion') {
+    const { error: errRec } = await sb.from('recepciones').insert({
+      material_codigo: r.material_codigo, material_rubro: r.material_rubro,
+      cantidad: dec.cant * factor, cantidad_contada: dec.cant, factor_aplicado: factor,
+      pedido_numero: null, usuario_id: perfilActual.id,
+      observaciones: 'Desde "en camino"' + (r.nota ? ' — ' + r.nota : ''),
+    });
+    if (errRec) { alert('No se pudo registrar la recepción, no se cambió nada: ' + errRec.message); chk.checked = false; return; }
+  }
+
+  // 2) Se saca de "en camino": completa = se marca recibida; parcial = se
+  //    registra lo recibido aparte y queda el saldo en camino.
+  let errCamino = null;
+  if (completa) {
+    ({ error: errCamino } = await sb.from('en_camino').update({ recibido: true, recibido_en: ahora }).eq('id', id));
+  } else {
+    const { error: e1 } = await sb.from('en_camino').update({ cantidad_cargada: cargada - dec.cant, cantidad: (cargada - dec.cant) * factor }).eq('id', id);
+    errCamino = e1;
+    if (!e1) {
+      const { id: _omitido, creado_en: _c, _aviso, ...resto } = r;
+      const { error: e2 } = await sb.from('en_camino').insert({ ...resto, cantidad_cargada: dec.cant, cantidad: dec.cant * factor, recibido: true, recibido_en: ahora });
+      errCamino = e2;
+    }
+  }
+  if (errCamino) {
+    alert((dec.accion === 'recepcion'
+      ? 'OJO: la recepción SÍ quedó registrada en el stock, pero no se pudo actualizar "en camino". Reintentá eligiendo la opción "el stock ya lo incluye" para no sumarla dos veces. '
+      : 'No se pudo actualizar: ') + errCamino.message);
+    await cargarTodo();
     return;
   }
-  const { error } = await sb.from('en_camino').update({ recibido: true, recibido_en: new Date().toISOString() }).eq('id', id);
-  if (error) { alert('No se pudo guardar: ' + error.message); chk.checked = false; return; }
   await cargarTodo();
 }
 
