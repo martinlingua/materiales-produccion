@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
   :root {
     --amarillo: #FFCC03;
@@ -378,6 +379,22 @@
 
     <!-- MATERIALES EN CAMINO -->
     <section id="sec-camino" class="seccion">
+      <div class="panel">
+        <h2>Cargar desde una orden de compra (PDF)</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí el PDF de la orden de compra. El sistema propone el material de cada línea y
+          vos revisás antes de cargar: no se guarda nada hasta que confirmes.
+        </p>
+        <div class="fila-form">
+          <label>Orden de compra (PDF)
+            <input type="file" id="oc-archivo" accept=".pdf,application/pdf">
+          </label>
+          <button class="primario" onclick="ocCargarArchivo()">Leer orden</button>
+        </div>
+        <div id="oc-aviso"></div>
+        <div id="oc-preview"></div>
+      </div>
+
       <div class="panel">
         <h2>Cargar mercadería en camino</h2>
         <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
@@ -1189,6 +1206,279 @@ async function cargarRecibidosCamino() {
         return `<tr><td>${f}</td><td>${r.material_codigo}</td><td>${escaparHTML(mat.nombre || '')}</td><td>${camTextoCantidad(r)}</td>
           <td><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camDeshacer(${r.id})">Deshacer</button></td></tr>`;
       }).join('');
+}
+
+// ---------------------------------------------------------------------
+// CARGA DE ORDEN DE COMPRA (PDF) → "En camino"
+// Se lee el texto del PDF en el navegador (no se sube a ningún lado), se
+// proponen los materiales por nombre y NADA se guarda hasta confirmar.
+// ---------------------------------------------------------------------
+function ocNumero(txt) {
+  const n = parseFloat(String(txt).replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+// paginas: [[{x, y, s}]] (texto con posición). Devuelve la cabecera de la
+// orden y sus líneas (cantidad, código del proveedor, nombre, unidad).
+function ocParsearPaginas(paginas) {
+  const res = { numero: '', proveedor: '', emision: '', lineas: [], avisos: [] };
+  const cercaY = (it, y) => Math.abs(it.y - y) < 4;
+  paginas.forEach((items, idxPag) => {
+    if (!res.numero) {
+      const n = items.find(i => /^\d{2,3}\.\d{3}$/.test(i.s) && i.y > 650);
+      if (n) res.numero = n.s;
+    }
+    const lab = items.find(i => i.s === 'Proveedor:');
+    if (lab && !res.proveedor) {
+      const v = items.filter(i => cercaY(i, lab.y) && i.x > lab.x).sort((a, b) => a.x - b.x)[0];
+      if (v) res.proveedor = v.s;
+    }
+    const labE = items.find(i => i.s === 'FEmisión:');
+    if (labE && !res.emision) {
+      const v = items.filter(i => cercaY(i, labE.y) && i.x > labE.x && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(i.s))[0];
+      if (v) res.emision = v.s;
+    }
+
+    const hCant = items.find(i => i.s === 'Cant:');
+    const hCod = items.find(i => i.s === 'Código');
+    const hNom = items.find(i => i.s === 'Nombre');
+    const hUd = items.find(i => i.s === 'Udad');
+    const hCap = items.find(i => i.s === 'Cap');
+    if (!hCant || !hCod || !hNom || !hUd || !hCap) {
+      res.avisos.push(`Página ${idxPag + 1}: no se encontró el encabezado de la tabla, se salteó.`);
+      return;
+    }
+    const xCod = (hCant.x + hCod.x) / 2;
+    const xNom = (hCod.x + hNom.x) / 2;
+    const xUd = hUd.x - 8;
+    const xCap = hCap.x - 4;
+    const total = items.find(i => /^TOTAL/i.test(i.s));
+    const yFin = total ? total.y + 2 : 0;
+    const tabla = items.filter(i => i.y < hCant.y - 3 && i.y > yFin && !/^P[aá]gina\b/i.test(i.s) && !/^SIP/i.test(i.s) && i.x < xCap + 200);
+    const filas = tabla
+      .filter(i => i.x < xCod && /^[\d.]+,\d+$/.test(i.s))
+      .sort((a, b) => b.y - a.y)
+      .map(i => ({ y: i.y, cantidad: ocNumero(i.s), cod: [], nom: [], ud: [] }));
+    tabla.forEach(i => {
+      if (i.x < xCod) return;
+      const fila = filas.filter(f => f.y >= i.y - 3).sort((a, b) => a.y - b.y)[0];
+      if (!fila) return;
+      if (i.x < xNom) fila.cod.push(i);
+      else if (i.x < xUd) fila.nom.push(i);
+      else if (i.x < xCap) fila.ud.push(i);
+    });
+    filas.forEach(f => {
+      const unir = arr => arr.sort((a, b) => (b.y - a.y) || (a.x - b.x)).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
+      const nombre = unir(f.nom);
+      if (!nombre || !(f.cantidad > 0)) return;
+      res.lineas.push({ cantidad: f.cantidad, codigo: unir(f.cod), nombre, unidad: unir(f.ud) });
+    });
+  });
+  return res;
+}
+
+// Normaliza un nombre para compararlo: sin acentos, "18 MM" = "18mm", sin signos.
+function ocNorm(t) {
+  return normalizarTexto(t)
+    .replace(/(\d+(?:[.,]\d+)?)\s*mm\b/g, '$1mm')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+function ocTokens(t) {
+  return new Set(ocNorm(t).split(' ').filter(w => w.length > 1 || /\d/.test(w)));
+}
+// Parecido entre dos nombres (0 a 1) y si uno contiene al otro con a lo sumo
+// 2 palabras de diferencia ("sub"). Si el espesor/medida en mm difiere, el
+// puntaje baja fuerte. Solo "sub" permite tildar solo: si cambia el color
+// (CENIZA vs BLANCO) no hay relación de contención y queda para revisar.
+function ocPuntaje(tokA, tokB) {
+  if (tokA.size === 0 || tokB.size === 0) return { p: 0, sub: false };
+  let comunes = 0;
+  tokA.forEach(w => { if (tokB.has(w)) comunes++; });
+  let p = (2 * comunes) / (tokA.size + tokB.size);
+  const mm = t => Array.from(t).filter(w => /^\d+(?:[.,]\d+)?mm$/.test(w)).sort().join(',');
+  const mA = mm(tokA), mB = mm(tokB);
+  if (mA && mB && mA !== mB) p *= 0.4;
+  const dif = tokA.size + tokB.size - 2 * comunes;
+  const sub = (comunes === tokA.size || comunes === tokB.size) && dif <= 2;
+  return { p, sub };
+}
+
+let ocEstado = null;       // { oc, filas: [...] }
+let ocEquivalencias = {};  // 'proveedor|texto' -> {material_codigo, material_rubro}
+
+async function ocLeerPDF(archivo) {
+  if (!window.pdfjsLib) throw new Error('No se cargó el lector de PDF (revisá la conexión a internet y recargá la página).');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(await archivo.arrayBuffer()) }).promise;
+  const paginas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const tc = await (await doc.getPage(p)).getTextContent();
+    paginas.push(tc.items.filter(i => i.str && i.str.trim()).map(i => ({ x: i.transform[4], y: i.transform[5], s: i.str.trim() })));
+  }
+  return paginas;
+}
+
+async function ocCargarArchivo() {
+  const aviso = document.getElementById('oc-aviso');
+  const input = document.getElementById('oc-archivo');
+  aviso.innerHTML = '';
+  document.getElementById('oc-preview').innerHTML = '';
+  ocEstado = null;
+  if (!input.files.length) { aviso.innerHTML = '<div class="aviso error">Elegí el PDF de la orden de compra.</div>'; return; }
+  let oc;
+  try {
+    oc = ocParsearPaginas(await ocLeerPDF(input.files[0]));
+  } catch (e) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo leer el PDF: ${escaparHTML(e.message)}</div>`;
+    return;
+  }
+  if (oc.lineas.length === 0) {
+    aviso.innerHTML = '<div class="aviso error">No encontré líneas de materiales en el PDF. ¿Es una orden de compra del sistema? Si es un escaneo (imagen), no se puede leer.</div>';
+    return;
+  }
+
+  // ¿Ya se cargó esta orden? (y ¿existe la columna nueva?)
+  let avisosExtra = '';
+  const { data: previas, error: errPrev } = await sb.from('en_camino').select('id, recibido').eq('oc_numero', oc.numero);
+  if (errPrev) {
+    aviso.innerHTML = `<div class="aviso error">Falta correr el SQL nuevo (sql_equivalencias_oc.sql) en Supabase: ${escaparHTML(errPrev.message)}</div>`;
+    return;
+  }
+  if (previas && previas.length > 0) {
+    avisosExtra += `<div class="aviso error">⚠ La orden ${escaparHTML(oc.numero)} ya se cargó antes (${previas.length} línea${previas.length === 1 ? '' : 's'}, ${previas.filter(p => p.recibido).length} ya llegaron). Si la cargás de nuevo se va a duplicar.</div>`;
+  }
+
+  // Equivalencias aprendidas de órdenes anteriores.
+  ocEquivalencias = {};
+  const { data: eqs } = await obtenerTodasLasFilas(() => sb.from('equivalencias_oc').select('*').order('id'));
+  (eqs || []).forEach(e => { ocEquivalencias[e.proveedor + '|' + e.texto] = e; });
+
+  const provNorm = ocNorm(oc.proveedor);
+  const filas = oc.lineas.map(linea => {
+    const tok = ocTokens(linea.nombre);
+    const alias = ocEquivalencias[provNorm + '|' + ocNorm(linea.nombre)];
+    let cands = materialesCache.map(m => {
+      const r = ocPuntaje(tok, ocTokens(m.nombre));
+      let p = r.p;
+      const pm = ocNorm(m.proveedor);
+      if (pm && provNorm && (pm.includes(provNorm) || provNorm.includes(pm)) && p > 0) p += 0.05;
+      return { m, p, sub: r.sub };
+    }).sort((a, b) => b.p - a.p).slice(0, 5);
+    let sel = null, origen = '';
+    if (alias) {
+      const m = materialesCache.find(x => x.codigo === alias.material_codigo && x.rubro === alias.material_rubro);
+      if (m) { sel = m; origen = 'aprendido'; if (!cands.some(c => c.m === m)) cands.unshift({ m, p: 1 }); }
+    }
+    if (!sel && cands[0] && cands[0].p >= 0.6) { sel = cands[0].m; origen = cands[0].sub ? 'sugerido' : 'revisar'; }
+    return { linea, cands, sel, origen, incluir: origen === 'aprendido' || origen === 'sugerido', cant: linea.cantidad };
+  });
+  ocEstado = { oc, filas, avisosExtra };
+  ocRender();
+}
+
+function ocOpcionesHTML(f) {
+  const opciones = f.cands.map((c, k) => `<option value="${k}" ${f.sel === c.m ? 'selected' : ''}>${c.m.codigo} — ${escaparHTML(c.m.nombre || '')} (${c.m.rubro})${c.p < 1 ? ' · ' + Math.round(Math.min(c.p, 1) * 100) + '%' : ''}</option>`).join('');
+  return `<option value="-1" ${f.sel ? '' : 'selected'}>— elegir material —</option>` + opciones;
+}
+
+function ocPreviaCantidad(f) {
+  if (!f.sel) return '';
+  const factor = Number(f.sel.factor_conversion) || 1;
+  const cant = Number(f.cant) || 0;
+  let txt = factor !== 1
+    ? `= ${redondear2(cant * factor)} ${escaparHTML(f.sel.umed || '')}`
+    : `${escaparHTML(f.sel.umed || '')}`;
+  if (factor === 1 && /m2|mt|metro/i.test(f.sel.umed || '')) txt += ' <span style="color:var(--rojo);">⚠ sin factor de conversión: se carga tal cual (¿placas o m²?)</span>';
+  return txt;
+}
+
+function ocRender() {
+  const cont = document.getElementById('oc-preview');
+  if (!ocEstado) { cont.innerHTML = ''; return; }
+  const { oc, filas, avisosExtra } = ocEstado;
+  const etiqueta = { aprendido: '<span class="tag-camino" style="background:#e3f2e3;color:var(--verde);">reconocido</span>', sugerido: '<span class="tag-camino">sugerido</span>', revisar: '<span class="tag-camino" style="background:#fde3e3;color:var(--rojo);">revisar</span>', '': '<span class="tag-camino" style="background:#eef1f5;color:#34495e;">sin coincidencia</span>' };
+  cont.innerHTML = `
+    <div class="aviso info" style="margin-top:10px;">Orden <strong>${escaparHTML(oc.numero || '?')}</strong> · ${escaparHTML(oc.proveedor || 'proveedor no detectado')} · emitida ${escaparHTML(oc.emision || '—')} · ${filas.length} líneas. Revisá cada una: solo se cargan las tildadas con material elegido.</div>
+    ${avisosExtra || ''}
+    ${oc.avisos.map(a => `<div class="aviso info">${escaparHTML(a)}</div>`).join('')}
+    <table class="pedidos" style="margin-top:8px;"><thead>
+      <tr><th>Cargar</th><th>Línea de la orden</th><th>Material del sistema</th><th>Cantidad (de la orden)</th></tr>
+    </thead><tbody>
+    ${filas.map((f, i) => `<tr>
+      <td><input type="checkbox" id="oc-inc-${i}" ${f.incluir ? 'checked' : ''} ${f.sel ? '' : 'disabled'} onchange="ocToggle(${i}, this.checked)"></td>
+      <td><div>${escaparHTML(f.linea.nombre)}</div>
+          <div style="font-size:11px; color:var(--gris-claro);">${f.linea.codigo ? 'Cód. proveedor: ' + escaparHTML(f.linea.codigo) + ' · ' : ''}${escaparHTML(f.linea.unidad || '')}</div></td>
+      <td>${etiqueta[f.origen] || etiqueta['']}
+          <select id="oc-sel-${i}" style="max-width:380px;" onchange="ocElegir(${i}, this.value)">${ocOpcionesHTML(f)}</select>
+          <input type="text" placeholder="Buscar otro material..." style="width:170px;" oninput="ocBuscar(${i}, this.value)"></td>
+      <td style="white-space:nowrap;"><input type="number" min="0" step="0.01" value="${f.cant}" style="width:90px;" oninput="ocCant(${i}, this.value)">
+          <div id="oc-prev-${i}" style="font-size:12px; color:var(--gris-oscuro);">${ocPreviaCantidad(f)}</div></td>
+    </tr>`).join('')}
+    </tbody></table>
+    <div style="margin-top:10px;">
+      <button class="primario" onclick="ocConfirmar()">Cargar lo tildado en "En camino"</button>
+      <button class="primario" style="background:var(--gris-claro);" onclick="ocCancelar()">Cancelar</button>
+    </div>`;
+}
+
+function ocToggle(i, v) { ocEstado.filas[i].incluir = v; }
+function ocCant(i, v) { ocEstado.filas[i].cant = parseFloat(v) || 0; document.getElementById('oc-prev-' + i).innerHTML = ocPreviaCantidad(ocEstado.filas[i]); }
+function ocElegir(i, k) {
+  const f = ocEstado.filas[i];
+  f.sel = Number(k) >= 0 ? f.cands[Number(k)].m : null;
+  f.origen = f.sel ? 'revisar' : '';
+  f.incluir = !!f.sel;
+  const chk = document.getElementById('oc-inc-' + i);
+  chk.disabled = !f.sel; chk.checked = f.incluir;
+  document.getElementById('oc-prev-' + i).innerHTML = ocPreviaCantidad(f);
+}
+function ocBuscar(i, q) {
+  const f = ocEstado.filas[i];
+  const palabras = normalizarTexto(q).split(/\s+/).filter(Boolean);
+  if (palabras.length === 0) return;
+  const hallados = materialesCache
+    .filter(m => { const t = normalizarTexto(m.codigo + ' ' + (m.nombre || '')); return palabras.every(p => t.includes(p)); })
+    .slice(0, 8);
+  f.cands = hallados.map(m => ({ m, p: 1 }));
+  f.sel = null; f.incluir = false;
+  document.getElementById('oc-sel-' + i).innerHTML = ocOpcionesHTML(f);
+  const chk = document.getElementById('oc-inc-' + i);
+  chk.disabled = true; chk.checked = false;
+  document.getElementById('oc-prev-' + i).innerHTML = '';
+}
+function ocCancelar() { ocEstado = null; document.getElementById('oc-preview').innerHTML = ''; document.getElementById('oc-archivo').value = ''; }
+
+async function ocConfirmar() {
+  if (!ocEstado) return;
+  const { oc, filas } = ocEstado;
+  const elegidas = filas.filter(f => f.incluir && f.sel && f.cant > 0);
+  const aviso = document.getElementById('oc-aviso');
+  if (elegidas.length === 0) { alert('No hay líneas tildadas con material elegido.'); return; }
+  if (!confirm(`Vas a cargar ${elegidas.length} línea(s) de la orden ${oc.numero} (${oc.proveedor}) como mercadería en camino. ¿Confirmás?`)) return;
+
+  const nota = `OC ${oc.numero} · ${oc.proveedor}${oc.emision ? ' · emitida ' + oc.emision : ''}`;
+  const registros = elegidas.map(f => {
+    const factor = Number(f.sel.factor_conversion) || 1;
+    return {
+      material_codigo: f.sel.codigo, material_rubro: f.sel.rubro,
+      cantidad: f.cant * factor, cantidad_cargada: f.cant, factor_aplicado: factor,
+      nota, oc_numero: oc.numero, oc_proveedor: oc.proveedor, usuario_id: perfilActual.id,
+    };
+  });
+  const { error } = await sb.from('en_camino').insert(registros);
+  if (error) { aviso.innerHTML = `<div class="aviso error">No se pudo guardar: ${escaparHTML(error.message)}</div>`; return; }
+
+  // Recuerda las equivalencias para la próxima orden.
+  const provNorm = ocNorm(oc.proveedor);
+  const aprendidas = elegidas.map(f => ({ proveedor: provNorm, texto: ocNorm(f.linea.nombre), material_codigo: f.sel.codigo, material_rubro: f.sel.rubro, actualizado_en: new Date().toISOString() }));
+  const { error: errEq } = await sb.from('equivalencias_oc').upsert(aprendidas, { onConflict: 'proveedor,texto' });
+
+  aviso.innerHTML = `<div class="aviso ok">Se cargaron ${elegidas.length} línea(s) de la orden ${escaparHTML(oc.numero)} en "En camino ahora".${errEq ? ' (No se pudieron guardar las equivalencias: ' + escaparHTML(errEq.message) + ')' : ''}</div>`;
+  ocEstado = null;
+  document.getElementById('oc-preview').innerHTML = '';
+  document.getElementById('oc-archivo').value = '';
+  await cargarTodo();
 }
 
 function redondear2(n) {
