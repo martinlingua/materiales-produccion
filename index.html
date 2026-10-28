@@ -279,6 +279,9 @@
                 title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
           Imprimir / PDF
         </button>
+        <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);" title="Si lo destildás, la lista impresa no incluye la columna de pedidos afectados">
+          <input type="checkbox" id="imprimir-pedidos-herraje" checked> con pedidos afectados
+        </label>
       </div>
       <table class="pedidos"><thead id="thead-herraje">
         <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
@@ -324,6 +327,9 @@
                 title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
           Imprimir / PDF
         </button>
+        <label style="display:flex; align-items:center; gap:5px; font-size:13px; color:var(--gris-claro);" title="Si lo destildás, la lista impresa no incluye la columna de pedidos afectados">
+          <input type="checkbox" id="imprimir-pedidos-insumo" checked> con pedidos afectados
+        </label>
       </div>
       <table class="pedidos"><thead id="thead-insumo">
         <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
@@ -398,6 +404,9 @@
           </label>
           <label>Buscar
             <input type="text" id="alerta-texto" placeholder="Material, proveedor, pedido o cliente..." oninput="renderizarAlertas()">
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; align-self:end; padding-bottom:6px;">
+            <input type="checkbox" id="alerta-pedidos" checked onchange="renderizarAlertas()"> Mostrar pedidos afectados
           </label>
         </div>
         <div id="alertas-contenido"></div>
@@ -1733,6 +1742,7 @@ function renderizarAlertas() {
   const rubro = document.getElementById('alerta-rubro').value;
   const palabras = normalizarTexto(document.getElementById('alerta-texto').value).split(/\s+/).filter(Boolean);
   const umbral = alertasUmbral();
+  const conPedidos = document.getElementById('alerta-pedidos').checked;
   const etiqueta = { 3: ['CRÍTICA', 'background:#fde3e3;color:#a33;'], 2: ['ALTA', 'background:#ffe9d6;color:#a4510b;'], 1: ['MEDIA', 'background:#fff0b3;color:#7a5a00;'] };
   const items = alertasCache.items
     .filter(a => rubro === 'todos' || a.rubro === rubro)
@@ -1748,18 +1758,20 @@ function renderizarAlertas() {
   if (items.length === 0) {
     html += '<div class="aviso ok">No hay alertas con estos filtros.</div>';
   } else {
-    html += `<table class="pedidos"><thead><tr><th>Gravedad</th><th>Material</th><th>A comprar</th><th>En camino</th><th>Pedidos afectados</th><th>Motivo</th></tr></thead><tbody>` +
+    html += `<table class="pedidos"><thead><tr><th>Gravedad</th><th>Material</th><th>A comprar</th><th>En camino</th><th>${conPedidos ? 'Pedidos afectados' : 'Próxima salida'}</th><th>Motivo</th></tr></thead><tbody>` +
       items.map(a => {
         const peds = a.pedidos.slice().sort((x, y) => x.d - y.d);
         const lista = peds.slice(0, 6).map(p => `<div>${p.n}${p.cliente ? ' · ' + escaparHTML(p.cliente) : ''} — sale ${formatearFechaCorta(p.salida)} <strong>(${alTextoDias(p.d)})</strong></div>`).join('') +
           (peds.length > 6 ? `<div style="color:var(--gris-claro);">y ${peds.length - 6} más</div>` : '');
         const u = escaparHTML(a.umed || '');
+        const primero = peds[0];
+        const resumen = `<div>${formatearFechaCorta(primero.salida)} <strong>(${alTextoDias(primero.d)})</strong></div><div style="color:var(--gris-claro);">${peds.length} pedido${peds.length === 1 ? '' : 's'} afectado${peds.length === 1 ? '' : 's'}</div>`;
         return `<tr>
           <td><span class="sev" style="${etiqueta[a.sev][1]}">${etiqueta[a.sev][0]}</span></td>
           <td><strong>${a.codigo}</strong> — ${escaparHTML(a.nombre || '')}<div style="font-size:11px; color:var(--gris-claro);">${a.rubro}${a.proveedor ? ' · ' + escaparHTML(a.proveedor) : ''}</div></td>
           <td class="pend-num ${a.comprar > 0.005 ? 'pend-pos' : ''}">${a.comprar > 0.005 ? redondear2(a.comprar) + ' ' + u : '—'}</td>
           <td class="pend-num ${a.camino > 0.005 ? 'pend-camino' : ''}">${a.camino > 0.005 ? redondear2(a.camino) + ' ' + u : '—'}</td>
-          <td style="font-size:12px;">${lista}</td>
+          <td style="font-size:12px;">${conPedidos ? lista : resumen}</td>
           <td style="font-size:12px;">${Array.from(a.motivos).map(escaparHTML).join('<br>')}</td>
         </tr>`;
       }).join('') + '</tbody></table>';
@@ -2726,7 +2738,7 @@ function formatearFechaCorta(iso) {
   return `${d}/${m}/${y}`;
 }
 
-function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
+function armarHTMLFaltantes(rubro, filas, descripcionFiltros, conPedidos = true) {
   const porProveedor = {};
   filas.forEach(f => {
     const prov = f.proveedor || '(sin proveedor)';
@@ -2764,11 +2776,11 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
         <td class="num">${redondear2(m.faltante)} ${u}</td>
         <td class="num cam-n">${m.camino > 0.005 ? redondear2(m.camino) + ' ' + u : '—'}</td>
         <td class="num ${m.comprar > 0.005 ? 'comprar' : 'cubierto'}">${m.comprar > 0.005 ? redondear2(m.comprar) + ' ' + u : '0'}</td>
-        <td class="ped">${escaparHTML(pedidos)}</td>
+        ${conPedidos ? `<td class="ped">${escaparHTML(pedidos)}</td>` : ''}
       </tr>`;
     }).join('');
     return `<h2>${escaparHTML(prov)} <span>(${mats.length} material${mats.length === 1 ? '' : 'es'})</span></h2>
-      <table><thead><tr><th class="chk"></th><th>Código</th><th>Material</th><th>Faltante total</th><th>En camino</th><th>A comprar</th><th>Pedidos (faltante)</th></tr></thead>
+      <table><thead><tr><th class="chk"></th><th>Código</th><th>Material</th><th>Faltante total</th><th>En camino</th><th>A comprar</th>${conPedidos ? '<th>Pedidos (faltante)</th>' : ''}</tr></thead>
       <tbody>${filasHTML}</tbody></table>`;
   }).join('');
 
@@ -2790,7 +2802,7 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros) {
     th.chk, td.chk { width: 16px; }
     th:nth-child(2) { width: 52px; }
     th:nth-child(4), th:nth-child(5), th:nth-child(6) { width: 70px; }
-    th:nth-child(7) { width: 24%; }
+    ${conPedidos ? 'th:nth-child(7) { width: 24%; }' : 'th:nth-child(3) { width: auto; }'}
     .cam { font-size: 10px; color: #7a5a00; font-weight: normal; margin-top: 2px; }
     td.cam-n { color: #7a5a00; }
     td.cubierto { color: #888; font-weight: normal; }
@@ -2836,7 +2848,7 @@ function imprimirFaltantes(rubro) {
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
   document.body.appendChild(iframe);
   iframe.contentDocument.open();
-  iframe.contentDocument.write(armarHTMLFaltantes(rubro, filas, partes.join(' · ')));
+  iframe.contentDocument.write(armarHTMLFaltantes(rubro, filas, partes.join(' · '), document.getElementById('imprimir-pedidos-' + rubro).checked));
   iframe.contentDocument.close();
   setTimeout(() => {
     iframe.contentWindow.focus();
