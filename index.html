@@ -133,6 +133,7 @@
   .pend-cero { color: var(--verde); }
   .pend-pos { color: var(--rojo); }
   .pend-camino { color: #b8860b; }
+  .sev { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 3px; padding: 2px 8px; }
   .tag-camino { display: inline-block; font-size: 11px; font-weight: 500; background: #fff0b3; color: #7a5a00; border-radius: 3px; padding: 1px 6px; margin-top: 2px; }
 
   .panel {
@@ -225,11 +226,13 @@
   <nav class="tabs">
     <button data-tab="herraje" class="tab-btn activa" onclick="cambiarTab('herraje')">Herrajes</button>
     <button data-tab="insumo" class="tab-btn" onclick="cambiarTab('insumo')">Insumos</button>
+    <button data-tab="alertas" id="btn-tab-alertas" class="tab-btn" onclick="cambiarTab('alertas')">Alertas</button>
     <button data-tab="recepcion" class="tab-btn" onclick="cambiarTab('recepcion')">Cargar recepción</button>
     <button data-tab="etiquetas" class="tab-btn" onclick="cambiarTab('etiquetas')">Etiquetas de piezas</button>
     <button data-tab="importar" class="tab-btn solo-comprador" onclick="cambiarTab('importar')">Importar del sistema</button>
     <button data-tab="stock" class="tab-btn solo-comprador" onclick="cambiarTab('stock')">Actualizar stock físico</button>
     <button data-tab="camino" id="btn-tab-camino" class="tab-btn solo-comprador" onclick="cambiarTab('camino')">Materiales en camino</button>
+    <button data-tab="indicadores" class="tab-btn solo-comprador" onclick="cambiarTab('indicadores')">Indicadores</button>
     <button data-tab="catalogo" class="tab-btn solo-comprador" onclick="cambiarTab('catalogo')">Catálogo / factores</button>
   </nav>
 
@@ -377,6 +380,63 @@
       </div>
     </section>
 
+    <!-- ALERTAS -->
+    <section id="sec-alertas" class="seccion">
+      <div class="panel">
+        <h2>Alertas de faltantes y mercadería en camino</h2>
+        <div class="fila-form">
+          <label>Avisar cuando el pedido sale en
+            <select id="alerta-dias" onchange="cambioUmbralAlertas()">
+              <option value="3">3 días</option><option value="5">5 días</option><option value="7" selected>7 días</option>
+              <option value="10">10 días</option><option value="14">14 días</option>
+            </select>
+          </label>
+          <label>Rubro
+            <select id="alerta-rubro" onchange="renderizarAlertas()">
+              <option value="todos">Todos</option><option value="herraje">Herrajes</option><option value="insumo">Insumos</option>
+            </select>
+          </label>
+          <label>Buscar
+            <input type="text" id="alerta-texto" placeholder="Material, proveedor, pedido o cliente..." oninput="renderizarAlertas()">
+          </label>
+        </div>
+        <div id="alertas-contenido"></div>
+      </div>
+    </section>
+
+    <!-- INDICADORES -->
+    <section id="sec-indicadores" class="seccion">
+      <div class="panel">
+        <h2>Indicadores de proveedores</h2>
+        <div class="fila-form">
+          <label>Datos de
+            <select id="ind-fuente" onchange="renderizarIndicadores()">
+              <option value="ambos">Sistema actual + historial anterior</option>
+              <option value="actual">Solo sistema actual</option>
+              <option value="anterior">Solo historial anterior</option>
+            </select>
+          </label>
+          <label>Proveedor
+            <select id="ind-prov" onchange="renderizarIndicadores()"><option value="">Todos los proveedores</option></select>
+          </label>
+        </div>
+        <div id="ind-contenido"></div>
+      </div>
+      <div class="panel">
+        <h2>Importar historial del sistema anterior de Faltantes</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          En el sistema anterior apretá "⬇ Exportar historial" y subí acá el archivo .json. Se puede repetir sin duplicar.
+        </p>
+        <div class="fila-form">
+          <label>Archivo .json
+            <input type="file" id="hist-archivo" accept=".json,application/json">
+          </label>
+          <button class="primario" onclick="importarHistorialFaltantes()">Importar historial</button>
+        </div>
+        <div id="hist-aviso"></div>
+      </div>
+    </section>
+
     <!-- MATERIALES EN CAMINO -->
     <section id="sec-camino" class="seccion">
       <div class="panel">
@@ -413,6 +473,9 @@
           </label>
           <label id="cam-cantidad-label">Cantidad
             <input type="number" id="cam-cantidad" min="0" step="0.01" oninput="camPrevia()">
+          </label>
+          <label>Fecha de compra
+            <input type="date" id="cam-fecha-compra">
           </label>
           <label>Llega aprox. (opcional)
             <input type="date" id="cam-fecha">
@@ -717,6 +780,7 @@ async function cargarPerfil() {
   if (data.rol === 'comprador' || data.rol === 'deposito') {
     document.querySelectorAll('.solo-comprador').forEach(el => el.style.display = 'inline-block');
   }
+  try { const u = localStorage.getItem('umbral_alertas'); if (u && document.querySelector('#alerta-dias option[value="' + u + '"]')) document.getElementById('alerta-dias').value = u; } catch (e) {}
   if (data.rol !== 'sector') cambiarTab('herraje');
   // Usuarios de sector (carpintería, pintura, melamina): solo ven la pestaña
   // de etiquetas, en modo lectura. No cargamos el resto de los datos.
@@ -752,6 +816,8 @@ function cambiarTab(tab) {
   if (tab === 'catalogo') cargarCatalogo();
   if (tab === 'recepcion') cargarHistorialRecepciones();
   if (tab === 'camino') renderizarCamino();
+  if (tab === 'alertas') renderizarAlertas();
+  if (tab === 'indicadores') cargarIndicadores();
   if (tab === 'etiquetas') cargarEtiquetas();
 }
 
@@ -936,6 +1002,7 @@ async function cargarTodo() {
   renderizarPedidos('herraje');
   renderizarPedidos('insumo');
   actualizarBadgeCamino();
+  actualizarAlertas();
   if (tabActiva === 'camino') renderizarCamino();
   cargarUltimaImportacion();
 }
@@ -988,21 +1055,30 @@ async function cargarEnCaminoDatos() {
 function asignarEnCamino() {
   ['herraje', 'insumo'].forEach(rubro => {
     const filas = datosPendientes[rubro];
-    filas.forEach(f => { f._camino = 0; f._comprar = Number(f.pendiente); });
-    const restante = {};
+    filas.forEach(f => { f._camino = 0; f._comprar = Number(f.pendiente); f._llegada = null; f._llegadaSinFecha = false; });
+    // Lotes en camino por material, los que llegan antes primero (sin fecha al final).
+    const lotes = {};
     enCaminoAbiertos.filter(r => r.material_rubro === rubro)
-      .forEach(r => { restante[r.material_codigo] = (restante[r.material_codigo] || 0) + Number(r.cantidad); });
-    if (Object.keys(restante).length === 0) return;
+      .sort((a, b) => (a.fecha_estimada || '9999').localeCompare(b.fecha_estimada || '9999') || (a.id - b.id))
+      .forEach(r => { (lotes[r.material_codigo] = lotes[r.material_codigo] || []).push({ resto: Number(r.cantidad), fecha: r.fecha_estimada || null }); });
+    if (Object.keys(lotes).length === 0) return;
     filas
-      .filter(f => Number(f.pendiente) > 0 && !esDespachado(f.fecha_salida) && restante[f.material_codigo] > 0)
+      .filter(f => Number(f.pendiente) > 0 && !esDespachado(f.fecha_salida) && lotes[f.material_codigo])
       .sort((a, b) => (b.prioridad_manual ? 1 : 0) - (a.prioridad_manual ? 1 : 0)
         || (a.fecha_pactada || '9999').localeCompare(b.fecha_pactada || '9999')
         || (a.pedido_numero - b.pedido_numero))
       .forEach(f => {
-        const usa = Math.min(restante[f.material_codigo], Number(f.pendiente));
-        f._camino = usa;
-        f._comprar = Number(f.pendiente) - usa;
-        restante[f.material_codigo] -= usa;
+        let falta = Number(f.pendiente), usado = 0;
+        for (const lote of lotes[f.material_codigo]) {
+          if (falta <= 0.005) break;
+          if (lote.resto <= 0.005) continue;
+          const usa = Math.min(lote.resto, falta);
+          lote.resto -= usa; falta -= usa; usado += usa;
+          if (!lote.fecha) f._llegadaSinFecha = true;
+          else if (!f._llegada || lote.fecha > f._llegada) f._llegada = lote.fecha;
+        }
+        f._camino = usado;
+        f._comprar = Number(f.pendiente) - usado;
       });
   });
 }
@@ -1103,12 +1179,14 @@ async function camAgregar() {
     cantidad_cargada: cargada,
     factor_aplicado: factor,
     fecha_estimada: document.getElementById('cam-fecha').value || null,
+    fecha_compra: document.getElementById('cam-fecha-compra').value || fechaLocalISO(new Date()),
     nota: document.getElementById('cam-nota').value.trim() || null,
     usuario_id: perfilActual.id,
   });
   if (error) { aviso.innerHTML = `<div class="aviso error">No se pudo guardar: ${escaparHTML(error.message)}</div>`; return; }
   aviso.innerHTML = '<div class="aviso ok">Agregado a "En camino ahora".</div>';
   ['cam-cantidad', 'cam-fecha', 'cam-nota', 'cam-busqueda'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('cam-fecha-compra').value = fechaLocalISO(new Date());
   document.getElementById('cam-previa').textContent = '';
   camSeleccionar(null);
   await cargarTodo();
@@ -1123,6 +1201,8 @@ function camTextoCantidad(r) {
 }
 
 function renderizarCamino() {
+  const fc = document.getElementById('cam-fecha-compra');
+  if (fc && !fc.value) fc.value = fechaLocalISO(new Date());
   const rubro = document.getElementById('cam-filtro-rubro').value;
   const palabras = normalizarTexto(document.getElementById('cam-filtro-texto').value).split(/\s+/).filter(Boolean);
   const tbody = document.getElementById('tbody-camino');
@@ -1148,7 +1228,7 @@ function renderizarCamino() {
           <td>${escaparHTML(mat.nombre || '(material no encontrado)')}
             ${r._aviso ? '<div class="tag-camino" title="Después de cargar esto hubo un conteo/ajuste de stock o una recepción de este material: puede que el stock ya incluya esta mercadería.">⚠ Hubo conteo o recepción después de cargarla: ¿ya llegó?</div>' : ''}</td>
           <td>${camTextoCantidad(r)}</td>
-          <td>${r.fecha_estimada || '<span style="color:var(--gris-claro);">—</span>'}${atrasada ? ' <span style="color:var(--rojo); font-weight:700;">atrasada</span>' : ''}</td>
+          <td style="white-space:nowrap;"><input type="date" value="${r.fecha_estimada || ''}" onchange="camCambiarFecha(${r.id}, this.value)" title="Fecha de llegada prometida">${atrasada ? ' <span style="color:var(--rojo); font-weight:700;">atrasada</span>' : ''}</td>
           <td>${cargado}</td>
           <td>${escaparHTML(r.nota || '')}${r.nota ? '' : '<span style="color:var(--gris-claro);">—</span>'}</td>
           <td style="white-space:nowrap;"><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camEditarNota(${r.id})" title="Cambiar el proveedor, la orden de compra o la aclaración">Editar nota</button>
@@ -1242,6 +1322,12 @@ async function camMarcarLlego(id, chk) {
     await cargarTodo();
     return;
   }
+  await cargarTodo();
+}
+
+async function camCambiarFecha(id, valor) {
+  const { error } = await sb.from('en_camino').update({ fecha_estimada: valor || null }).eq('id', id);
+  if (error) { alert('No se pudo guardar la fecha: ' + error.message); return; }
   await cargarTodo();
 }
 
@@ -1446,7 +1532,7 @@ async function ocCargarArchivo() {
       if (m) { sel = m; origen = 'aprendido'; if (!cands.some(c => c.m === m)) cands.unshift({ m, p: 1 }); }
     }
     if (!sel && cands[0] && cands[0].p >= 0.6) { sel = cands[0].m; origen = cands[0].sub ? 'sugerido' : 'revisar'; }
-    return { linea, cands, sel, origen, incluir: origen === 'aprendido' || origen === 'sugerido', cant: linea.cantidad };
+    return { linea, cands, sel, origen, incluir: origen === 'aprendido' || origen === 'sugerido', cant: linea.cantidad, fecha: '' };
   });
   ocEstado = { oc, filas, avisosExtra };
   ocRender();
@@ -1477,8 +1563,14 @@ function ocRender() {
     <div class="aviso info" style="margin-top:10px;">Orden <strong>${escaparHTML(oc.numero || '?')}</strong> · ${escaparHTML(oc.proveedor || 'proveedor no detectado')} · emitida ${escaparHTML(oc.emision || '—')} · ${filas.length} líneas. Revisá cada una: solo se cargan las tildadas con material elegido.</div>
     ${avisosExtra || ''}
     ${oc.avisos.map(a => `<div class="aviso info">${escaparHTML(a)}</div>`).join('')}
+    <div class="fila-form" style="margin-top:8px;">
+      <label>Fecha de llegada prometida (para toda la orden, opcional)
+        <input type="date" id="oc-fecha-global" onchange="ocFechaGlobal(this.value)">
+      </label>
+      <div style="font-size:12px; color:var(--gris-claro); align-self:end;">Sin fecha prometida no se puede medir la demora del proveedor ni avisar si llega después de la salida de un pedido. Podés ajustarla por línea.</div>
+    </div>
     <table class="pedidos" style="margin-top:8px;"><thead>
-      <tr><th>Cargar</th><th>Línea de la orden</th><th>Material del sistema</th><th>Cantidad (de la orden)</th></tr>
+      <tr><th>Cargar</th><th>Línea de la orden</th><th>Material del sistema</th><th>Cantidad (de la orden)</th><th>Llega aprox.</th></tr>
     </thead><tbody>
     ${filas.map((f, i) => `<tr>
       <td><input type="checkbox" id="oc-inc-${i}" ${f.incluir ? 'checked' : ''} ${f.sel ? '' : 'disabled'} onchange="ocToggle(${i}, this.checked)"></td>
@@ -1489,6 +1581,7 @@ function ocRender() {
           <input type="text" placeholder="Buscar otro material..." style="width:170px;" oninput="ocBuscar(${i}, this.value)"></td>
       <td style="white-space:nowrap;"><input type="number" min="0" step="0.01" value="${f.cant}" style="width:90px;" oninput="ocCant(${i}, this.value)">
           <div id="oc-prev-${i}" style="font-size:12px; color:var(--gris-oscuro);">${ocPreviaCantidad(f)}</div></td>
+      <td><input type="date" id="oc-fec-${i}" value="${f.fecha || ''}" onchange="ocFechaFila(${i}, this.value)"></td>
     </tr>`).join('')}
     </tbody></table>
     <div style="margin-top:10px;">
@@ -1498,6 +1591,10 @@ function ocRender() {
 }
 
 function ocToggle(i, v) { ocEstado.filas[i].incluir = v; }
+function ocFechaGlobal(v) {
+  ocEstado.filas.forEach((f, i) => { f.fecha = v; const el = document.getElementById('oc-fec-' + i); if (el) el.value = v; });
+}
+function ocFechaFila(i, v) { ocEstado.filas[i].fecha = v; }
 function ocCant(i, v) { ocEstado.filas[i].cant = parseFloat(v) || 0; document.getElementById('oc-prev-' + i).innerHTML = ocPreviaCantidad(ocEstado.filas[i]); }
 function ocElegir(i, k) {
   const f = ocEstado.filas[i];
@@ -1539,6 +1636,7 @@ async function ocConfirmar() {
       material_codigo: f.sel.codigo, material_rubro: f.sel.rubro,
       cantidad: f.cant * factor, cantidad_cargada: f.cant, factor_aplicado: factor,
       nota, oc_numero: oc.numero, oc_proveedor: oc.proveedor, usuario_id: perfilActual.id,
+      fecha_estimada: f.fecha || null, fecha_compra: parsearFechaArgentina(oc.emision) || fechaLocalISO(new Date()),
     };
   });
   const { error } = await sb.from('en_camino').insert(registros);
@@ -1554,6 +1652,305 @@ async function ocConfirmar() {
   document.getElementById('oc-preview').innerHTML = '';
   document.getElementById('oc-archivo').value = '';
   await cargarTodo();
+}
+
+// ---------------------------------------------------------------------
+// ALERTAS: materiales con faltante real (o mercadería en camino que llega
+// tarde) para pedidos que salen pronto. Se calcula en el navegador con lo
+// que ya está cargado: pendientes + mercadería en camino.
+// ---------------------------------------------------------------------
+function alDiasHasta(iso) {
+  const hoy = new Date(fechaLocalISO(new Date()) + 'T00:00:00');
+  return Math.round((new Date(iso + 'T00:00:00') - hoy) / 86400000);
+}
+function alTextoDias(d) {
+  return d === 0 ? 'HOY' : d === 1 ? 'mañana' : `en ${d}d`;
+}
+
+let alertasCache = { items: [], sinFecha: [] };
+
+function calcularAlertas(umbral) {
+  const hoy = fechaLocalISO(new Date());
+  const grupos = {};
+  const sinFecha = {};
+  ['herraje', 'insumo'].forEach(rubro => datosPendientes[rubro].forEach(f => {
+    if (!(Number(f.pendiente) > 0.005)) return;
+    const key = rubro + '|' + f.material_codigo;
+    if (!f.fecha_salida) {
+      if (!sinFecha[f.pedido_numero]) sinFecha[f.pedido_numero] = { pedido: f.pedido_numero, cliente: f.cliente, materiales: new Set() };
+      sinFecha[f.pedido_numero].materiales.add(f.material_codigo);
+      return;
+    }
+    if (esDespachado(f.fecha_salida)) return;
+    const d = alDiasHasta(f.fecha_salida);
+    const motivos = [];
+    let sev = 0;
+    const sevAlta = d <= 2 ? 3 : 2;
+    if (f._comprar > 0.005 && d <= umbral) { motivos.push('Falta comprar'); sev = Math.max(sev, sevAlta); }
+    if (f._camino > 0.005) {
+      if (f._llegada && f._llegada > f.fecha_salida) {
+        motivos.push(`En camino: llega el ${formatearFechaCorta(f._llegada)}, después de la salida`); sev = Math.max(sev, sevAlta);
+      } else if (f._llegada && f._llegada < hoy && d <= umbral) {
+        motivos.push(`En camino atrasado: debía llegar el ${formatearFechaCorta(f._llegada)}`); sev = Math.max(sev, sevAlta);
+      } else if (f._llegadaSinFecha && d <= umbral) {
+        motivos.push('En camino sin fecha de llegada'); sev = Math.max(sev, 1);
+      }
+    }
+    if (!motivos.length) return;
+    if (!grupos[key]) grupos[key] = { rubro, codigo: f.material_codigo, nombre: f.material_nombre, proveedor: f.proveedor, umed: f.umed, sev: 0, minDias: 9999, comprar: 0, camino: 0, motivos: new Set(), pedidos: [] };
+    const g = grupos[key];
+    g.sev = Math.max(g.sev, sev);
+    g.minDias = Math.min(g.minDias, d);
+    if (motivos.includes('Falta comprar')) g.comprar += f._comprar;
+    if (f._camino > 0.005 && motivos.some(m => m.startsWith('En camino'))) g.camino += f._camino;
+    motivos.forEach(m => g.motivos.add(m));
+    g.pedidos.push({ n: f.pedido_numero, cliente: f.cliente, salida: f.fecha_salida, d });
+  }));
+  const items = Object.values(grupos).sort((a, b) => b.sev - a.sev || a.minDias - b.minDias);
+  return { items, sinFecha: Object.values(sinFecha).sort((a, b) => a.pedido - b.pedido) };
+}
+
+function alertasUmbral() {
+  const el = document.getElementById('alerta-dias');
+  return el ? (parseInt(el.value) || 7) : 7;
+}
+
+function actualizarAlertas() {
+  alertasCache = calcularAlertas(alertasUmbral());
+  const n = alertasCache.items.filter(a => a.sev >= 2).length;
+  const btn = document.getElementById('btn-tab-alertas');
+  if (btn) btn.textContent = 'Alertas' + (n > 0 ? ` (${n})` : '');
+  if (tabActiva === 'alertas') renderizarAlertas();
+}
+
+function cambioUmbralAlertas() {
+  try { localStorage.setItem('umbral_alertas', String(alertasUmbral())); } catch (e) {}
+  actualizarAlertas();
+}
+
+function renderizarAlertas() {
+  const cont = document.getElementById('alertas-contenido');
+  const rubro = document.getElementById('alerta-rubro').value;
+  const palabras = normalizarTexto(document.getElementById('alerta-texto').value).split(/\s+/).filter(Boolean);
+  const umbral = alertasUmbral();
+  const etiqueta = { 3: ['CRÍTICA', 'background:#fde3e3;color:#a33;'], 2: ['ALTA', 'background:#ffe9d6;color:#a4510b;'], 1: ['MEDIA', 'background:#fff0b3;color:#7a5a00;'] };
+  const items = alertasCache.items
+    .filter(a => rubro === 'todos' || a.rubro === rubro)
+    .filter(a => { const t = normalizarTexto(a.codigo + ' ' + a.nombre + ' ' + (a.proveedor || '') + ' ' + a.pedidos.map(p => p.n + ' ' + (p.cliente || '')).join(' ')); return palabras.every(p => t.includes(p)); });
+  const cuenta = n => items.filter(a => a.sev === n).length;
+
+  let html = `<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+    <span class="sev" style="${etiqueta[3][1]}">${cuenta(3)} críticas</span>
+    <span class="sev" style="${etiqueta[2][1]}">${cuenta(2)} altas</span>
+    <span class="sev" style="${etiqueta[1][1]}">${cuenta(1)} medias</span>
+    <span style="font-size:12px; color:var(--gris-claro); align-self:center;">Crítica = el pedido sale en 2 días o menos (o ya hoy). Alta = sale dentro de ${umbral} días, o la mercadería en camino llega después de la salida.</span></div>`;
+
+  if (items.length === 0) {
+    html += '<div class="aviso ok">No hay alertas con estos filtros.</div>';
+  } else {
+    html += `<table class="pedidos"><thead><tr><th>Gravedad</th><th>Material</th><th>A comprar</th><th>En camino</th><th>Pedidos afectados</th><th>Motivo</th></tr></thead><tbody>` +
+      items.map(a => {
+        const peds = a.pedidos.slice().sort((x, y) => x.d - y.d);
+        const lista = peds.slice(0, 6).map(p => `<div>${p.n}${p.cliente ? ' · ' + escaparHTML(p.cliente) : ''} — sale ${formatearFechaCorta(p.salida)} <strong>(${alTextoDias(p.d)})</strong></div>`).join('') +
+          (peds.length > 6 ? `<div style="color:var(--gris-claro);">y ${peds.length - 6} más</div>` : '');
+        const u = escaparHTML(a.umed || '');
+        return `<tr>
+          <td><span class="sev" style="${etiqueta[a.sev][1]}">${etiqueta[a.sev][0]}</span></td>
+          <td><strong>${a.codigo}</strong> — ${escaparHTML(a.nombre || '')}<div style="font-size:11px; color:var(--gris-claro);">${a.rubro}${a.proveedor ? ' · ' + escaparHTML(a.proveedor) : ''}</div></td>
+          <td class="pend-num ${a.comprar > 0.005 ? 'pend-pos' : ''}">${a.comprar > 0.005 ? redondear2(a.comprar) + ' ' + u : '—'}</td>
+          <td class="pend-num ${a.camino > 0.005 ? 'pend-camino' : ''}">${a.camino > 0.005 ? redondear2(a.camino) + ' ' + u : '—'}</td>
+          <td style="font-size:12px;">${lista}</td>
+          <td style="font-size:12px;">${Array.from(a.motivos).map(escaparHTML).join('<br>')}</td>
+        </tr>`;
+      }).join('') + '</tbody></table>';
+  }
+
+  if (alertasCache.sinFecha.length > 0) {
+    html += `<details style="margin-top:14px;"><summary style="cursor:pointer; color:var(--gris-claro);">⚠ ${alertasCache.sinFecha.length} pedido(s) con faltante y SIN fecha de salida: las alertas no los ven</summary>
+      <div style="font-size:12px; margin-top:6px;">${alertasCache.sinFecha.map(p => `${p.pedido}${p.cliente ? ' · ' + escaparHTML(p.cliente) : ''} (${p.materiales.size} material${p.materiales.size === 1 ? '' : 'es'})`).join('<br>')}</div>
+      <div style="font-size:12px; color:var(--gris-claro); margin-top:6px;">La fecha de salida se carga con "Actualizar fechas de salida" (archivo de Seguimiento).</div></details>`;
+  }
+  cont.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------
+// INDICADORES DE PROVEEDORES
+// Salen de la mercadería en camino (fecha de compra, fecha prometida y
+// fecha real de llegada) y del historial del sistema anterior. La demora
+// solo se mide cuando hay fecha prometida: sin ella no se cuenta como "a
+// tiempo" (no se inventan datos).
+// ---------------------------------------------------------------------
+let indDatos = null;
+
+function indDias(a, b) {
+  if (!a || !b) return null;
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
+
+async function cargarIndicadores() {
+  const cont = document.getElementById('ind-contenido');
+  cont.innerHTML = '<div style="color:var(--gris-claro);">Cargando...</div>';
+  const { data: compras, error: e1 } = await obtenerTodasLasFilas(() => sb.from('en_camino').select('*').order('id'));
+  if (e1) { cont.innerHTML = `<div class="aviso error">No se pudieron leer las compras en camino: ${escaparHTML(e1.message)}</div>`; return; }
+  const { data: legado, error: e2 } = await obtenerTodasLasFilas(() => sb.from('faltantes_historial').select('*').order('id'));
+  indDatos = { compras: compras || [], legado: e2 ? [] : (legado || []), errLegado: e2 ? e2.message : null };
+  renderizarIndicadores();
+}
+
+function indRegistros() {
+  const hoy = fechaLocalISO(new Date());
+  const regs = [];
+  indDatos.compras.forEach(r => {
+    const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+    const compra = r.fecha_compra || (r.creado_en ? fechaLocalISO(new Date(r.creado_en)) : null);
+    const llegada = r.recibido && r.recibido_en ? fechaLocalISO(new Date(r.recibido_en)) : null;
+    const demora = r.recibido && r.fecha_estimada ? indDias(r.fecha_estimada, llegada) : null;
+    regs.push({
+      origen: 'actual', proveedor: (r.oc_proveedor || mat.proveedor || '(sin proveedor)').trim(),
+      articulo: mat.nombre || ('Material ' + r.material_codigo), cerrado: !!r.recibido, mes: (compra || '').slice(0, 7),
+      plazo: r.recibido ? indDias(compra, llegada) : null, demora, aTiempo: demora === null ? null : demora <= 0,
+      atrasadaHoy: !r.recibido && !!r.fecha_estimada && r.fecha_estimada < hoy,
+    });
+  });
+  indDatos.legado.forEach(r => {
+    // El sistema anterior rellenaba la salida con ingreso + 21 días: esas fechas no son un compromiso real.
+    const fechaReal = r.fecha_salida && !(r.fecha_ingreso && indDias(r.fecha_ingreso, r.fecha_salida) === 21);
+    const demora = r.hecho && fechaReal && r.fecha_resuelto ? indDias(r.fecha_salida, r.fecha_resuelto) : null;
+    regs.push({
+      origen: 'anterior', proveedor: (r.proveedor || '(sin proveedor)').trim(),
+      articulo: r.articulo || '—', cerrado: !!r.hecho, mes: (r.fecha_ingreso || '').slice(0, 7),
+      plazo: r.hecho ? indDias(r.fecha_ingreso, r.fecha_resuelto) : null, demora, aTiempo: demora === null ? null : demora <= 0,
+      atrasadaHoy: false,
+    });
+  });
+  return regs;
+}
+
+function renderizarIndicadores() {
+  if (!indDatos) return;
+  const cont = document.getElementById('ind-contenido');
+  const fuente = document.getElementById('ind-fuente').value;
+  const selProv = document.getElementById('ind-prov');
+  const provElegido = selProv.value;
+  let regs = indRegistros().filter(r => fuente === 'ambos' || r.origen === fuente);
+
+  const clave = p => normalizarTexto(p).replace(/\s+/g, ' ');
+  const nombres = {};
+  regs.forEach(r => { const k = clave(r.proveedor); if (!nombres[k]) nombres[k] = r.proveedor; });
+  const ordenados = Object.keys(nombres).sort((a, b) => nombres[a].localeCompare(nombres[b]));
+  selProv.innerHTML = '<option value="">Todos los proveedores</option>' + ordenados.map(k => `<option value="${escaparHTML(k)}" ${k === provElegido ? 'selected' : ''}>${escaparHTML(nombres[k])}</option>`).join('');
+  if (provElegido) regs = regs.filter(r => clave(r.proveedor) === provElegido);
+
+  const media = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const cerrados = regs.filter(r => r.cerrado);
+  const conFecha = cerrados.filter(r => r.aTiempo !== null);
+  const aTiempo = conFecha.filter(r => r.aTiempo).length;
+  const tardes = conFecha.filter(r => !r.aTiempo).length;
+  const atrasoProm = media(conFecha.map(r => r.demora));
+  const plazoProm = media(cerrados.map(r => r.plazo).filter(x => x !== null && x >= 0));
+  const abiertos = regs.filter(r => !r.cerrado);
+  const atrasadasHoy = abiertos.filter(r => r.atrasadaHoy).length;
+  const f1 = n => n === null ? '—' : String(Math.round(n * 10) / 10);
+
+  let html = '';
+  if (indDatos.errLegado) html += `<div class="aviso info">Todavía no se puede leer el historial anterior (¿falta correr sql_alertas_indicadores.sql?): ${escaparHTML(indDatos.errLegado)}</div>`;
+  html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 14px;">
+    ${[
+      ['Registros', regs.length, `${cerrados.length} cerrados · ${abiertos.length} abiertos`],
+      ['A tiempo', conFecha.length ? Math.round(aTiempo / conFecha.length * 100) + '%' : '—', `${aTiempo} de ${conFecha.length} con fecha prometida`],
+      ['Fuera de término', tardes, conFecha.length ? Math.round(tardes / conFecha.length * 100) + '% de los medibles' : 'sin datos medibles'],
+      ['Atraso promedio', atrasoProm === null ? '—' : (atrasoProm > 0 ? '+' : '') + f1(atrasoProm) + ' d', 'vs. fecha prometida (− = antes)'],
+      ['Plazo promedio', plazoProm === null ? '—' : f1(plazoProm) + ' d', 'compra → llegada'],
+      ['Abiertos atrasados', atrasadasHoy, 'en camino y vencida la fecha prometida'],
+    ].map(([t, v, s]) => `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:11px; color:var(--gris-claro); text-transform:uppercase;">${t}</div><div style="font-size:26px; font-weight:700;">${v}</div><div style="font-size:11px; color:var(--gris-claro);">${s}</div></div>`).join('')}
+  </div>
+  <div style="font-size:12px; color:var(--gris-claro); margin-bottom:12px;">Solo se mide la demora donde hay fecha prometida (${conFecha.length} de ${cerrados.length} cerrados). Sin fecha prometida no se cuenta como "a tiempo". Del historial anterior se excluyen las fechas de salida iguales a ingreso + 21 días (valor automático de ese sistema).</div>`;
+
+  if (!provElegido) {
+    const mapa = {};
+    regs.forEach(r => {
+      const k = clave(r.proveedor);
+      if (!mapa[k]) mapa[k] = { ok: 0, tarde: 0, sinF: 0, abierto: 0, demoras: [] };
+      const m = mapa[k];
+      if (!r.cerrado) m.abierto++; else if (r.aTiempo === null) m.sinF++; else if (r.aTiempo) m.ok++; else m.tarde++;
+      if (r.demora !== null) m.demoras.push(r.demora);
+    });
+    const entradas = Object.entries(mapa).sort((a, b) => (b[1].ok + b[1].tarde + b[1].sinF + b[1].abierto) - (a[1].ok + a[1].tarde + a[1].sinF + a[1].abierto));
+    const maxT = Math.max(...entradas.map(([, v]) => v.ok + v.tarde + v.sinF + v.abierto), 1);
+    html += `<h3 style="margin:8px 0;">Por proveedor</h3>
+      <div style="font-size:12px; color:var(--gris-claro); margin-bottom:8px;"><span style="color:#FFCC03;">■</span> a tiempo &nbsp; <span style="color:#C0392B;">■</span> fuera de término &nbsp; <span style="color:#d9d6cc;">■</span> cerrado sin fecha prometida &nbsp; <span style="color:#9a978c;">■</span> abierto</div>` +
+      entradas.map(([k, v]) => {
+        const w = n => (n / maxT * 100).toFixed(1);
+        const prom = media(v.demoras);
+        return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+          <div style="width:170px; flex-shrink:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escaparHTML(nombres[k])}">${escaparHTML(nombres[k])}</div>
+          <div style="flex:1; height:22px; background:#ecebe6; border-radius:5px; overflow:hidden; display:flex;">
+            <div style="width:${w(v.ok)}%; background:#FFCC03;"></div><div style="width:${w(v.tarde)}%; background:#C0392B; opacity:.8;"></div>
+            <div style="width:${w(v.sinF)}%; background:#d9d6cc;"></div><div style="width:${w(v.abierto)}%; background:#9a978c;"></div></div>
+          <div style="min-width:190px; font-size:12px;"><span style="color:var(--verde);">${v.ok}✓</span> <span style="color:var(--rojo);">${v.tarde}✗</span> <span>${v.sinF}∅</span> <span>${v.abierto}⧖</span>${prom === null ? '' : ` <strong style="color:${prom <= 0 ? 'var(--verde)' : 'var(--rojo)'};">${prom > 0 ? '+' : ''}${f1(prom)}d</strong>`}</div></div>`;
+      }).join('');
+  } else {
+    const ords = regs.slice().sort((a, b) => (b.demora ?? -9999) - (a.demora ?? -9999));
+    html += `<h3 style="margin:8px 0;">Detalle de ${escaparHTML(nombres[provElegido] || '')}</h3><table class="pedidos"><thead><tr><th>Artículo</th><th>Origen</th><th>Estado</th><th>Demora vs. prometida</th><th>Plazo compra → llegada</th></tr></thead><tbody>` +
+      ords.map(r => `<tr><td>${escaparHTML(r.articulo)}</td><td>${r.origen === 'actual' ? 'Sistema actual' : 'Historial anterior'}</td>
+        <td>${r.cerrado ? 'Llegó' : (r.atrasadaHoy ? '<span style="color:var(--rojo);">En camino, atrasada</span>' : 'En camino')}</td>
+        <td class="pend-num ${r.demora === null ? '' : (r.demora <= 0 ? 'pend-cero' : 'pend-pos')}">${r.demora === null ? '<span style="color:var(--gris-claro);">sin fecha prometida</span>' : (r.demora > 0 ? '+' : '') + r.demora + ' d'}</td>
+        <td>${r.plazo === null ? '—' : r.plazo + ' d'}</td></tr>`).join('') + '</tbody></table>';
+  }
+
+  const meses = {};
+  regs.forEach(r => {
+    if (!r.mes) return;
+    if (!meses[r.mes]) meses[r.mes] = { total: 0, cerrados: 0, demoras: [] };
+    meses[r.mes].total++; if (r.cerrado) meses[r.mes].cerrados++;
+    if (r.demora !== null) meses[r.mes].demoras.push(r.demora);
+  });
+  const NOMBRES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const lista = Object.entries(meses).sort((a, b) => b[0].localeCompare(a[0]));
+  if (lista.length) {
+    html += `<h3 style="margin:18px 0 8px;">Por mes</h3><div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px;">` +
+      lista.map(([k, v]) => {
+        const [y, m] = k.split('-'); const prom = media(v.demoras);
+        return `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:12px; font-weight:700; color:var(--gris-claro);">${NOMBRES[parseInt(m) - 1].toUpperCase()} ${y}</div>
+          <div style="font-size:24px; font-weight:700;">${v.total}</div><div style="font-size:12px;">${v.cerrados} cerrados · ${v.total - v.cerrados} abiertos</div>
+          <div style="font-size:12px; margin-top:4px; color:${prom === null ? 'var(--gris-claro)' : (prom <= 0 ? 'var(--verde)' : 'var(--rojo)')};">${prom === null ? 'sin demora medible' : 'atraso prom. ' + (prom > 0 ? '+' : '') + f1(prom) + ' d'}</div></div>`;
+      }).join('') + '</div>';
+  }
+  cont.innerHTML = html;
+}
+
+async function importarHistorialFaltantes() {
+  const aviso = document.getElementById('hist-aviso');
+  const input = document.getElementById('hist-archivo');
+  aviso.innerHTML = '';
+  if (!input.files.length) { aviso.innerHTML = '<div class="aviso error">Elegí el archivo .json exportado del sistema anterior.</div>'; return; }
+  let datos;
+  try {
+    datos = JSON.parse(await input.files[0].text());
+    if (!Array.isArray(datos)) datos = datos.items || datos.data || [];
+  } catch (e) { aviso.innerHTML = `<div class="aviso error">El archivo no es un JSON válido: ${escaparHTML(e.message)}</div>`; return; }
+  const fechaOk = v => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null);
+  const vistos = new Set();
+  const filas = [];
+  datos.forEach(r => {
+    const id = String(r._id || r.id || '');
+    if (!id || vistos.has(id)) return;
+    vistos.add(id);
+    filas.push({
+      origen_id: id, fecha_ingreso: fechaOk(r.fecha), fecha_salida: fechaOk(r.fechaSalida),
+      codigo: r.codigo || null, articulo: r.articulo || null, proveedor: (r.proveedor || '').trim() || null,
+      pedidos: r.pedidos || null, comentario: r.comentario || null, hecho: !!r.done, fecha_resuelto: fechaOk(r.doneDate),
+    });
+  });
+  if (filas.length === 0) { aviso.innerHTML = '<div class="aviso error">No encontré registros en el archivo.</div>'; return; }
+  if (!confirm(`Se van a importar ${filas.length} registros del sistema anterior (los que ya estaban importados se actualizan, no se duplican). ¿Confirmás?`)) return;
+  for (let i = 0; i < filas.length; i += 500) {
+    const { error } = await sb.from('faltantes_historial').upsert(filas.slice(i, i + 500), { onConflict: 'origen_id' });
+    if (error) { aviso.innerHTML = `<div class="aviso error">Falló la importación (¿corriste sql_alertas_indicadores.sql?): ${escaparHTML(error.message)}</div>`; return; }
+  }
+  aviso.innerHTML = `<div class="aviso ok">Importados ${filas.length} registros del historial (${filas.filter(f => f.hecho).length} resueltos).</div>`;
+  input.value = '';
+  await cargarIndicadores();
 }
 
 function redondear2(n) {
