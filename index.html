@@ -416,17 +416,28 @@
     <!-- INDICADORES -->
     <section id="sec-indicadores" class="seccion">
       <div class="panel">
-        <h2>Indicadores de proveedores</h2>
+        <h2>Indicadores de demora de faltantes</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Cuánto tarda en cubrirse cada faltante, desde que entra el requerimiento hasta que llega la mercadería o se carga stock que lo cubre.
+        </p>
         <div class="fila-form">
           <label>Datos de
             <select id="ind-fuente" onchange="renderizarIndicadores()">
+              <option value="actual">Sistema actual</option>
               <option value="ambos">Sistema actual + historial anterior</option>
-              <option value="actual">Solo sistema actual</option>
               <option value="anterior">Solo historial anterior</option>
+            </select>
+          </label>
+          <label>Rubro
+            <select id="ind-rubro" onchange="renderizarIndicadores()">
+              <option value="todos">Todos</option><option value="herraje">Herrajes</option><option value="insumo">Insumos</option>
             </select>
           </label>
           <label>Proveedor
             <select id="ind-prov" onchange="renderizarIndicadores()"><option value="">Todos los proveedores</option></select>
+          </label>
+          <label>Buscar
+            <input type="text" id="ind-texto" placeholder="Material, código o pedido..." oninput="renderizarIndicadores()">
           </label>
         </div>
         <div id="ind-contenido"></div>
@@ -954,6 +965,7 @@ async function cargarTodo() {
     return;
   }
 
+  sincronizarSeguimiento(pend);  // sin esperar: registra/cierra faltantes para los indicadores
   const huboCierres = await cerrarPorFechaSalidaVencida(pend);
   if (huboCierres) {
     await cargarTodo();
@@ -1786,12 +1798,78 @@ function renderizarAlertas() {
 }
 
 // ---------------------------------------------------------------------
-// INDICADORES DE PROVEEDORES
-// Salen de la mercadería en camino (fecha de compra, fecha prometida y
-// fecha real de llegada) y del historial del sistema anterior. La demora
-// solo se mide cuando hay fecha prometida: sin ella no se cuenta como "a
-// tiempo" (no se inventan datos).
+// SEGUIMIENTO DE FALTANTES E INDICADORES
+// Cada línea de requerimiento (pedido + material) que queda con pendiente
+// > 0 se registra como "abierta" con su fecha de inicio, y se cierra el día
+// en que deja de tener pendiente (llegó mercadería o se cargó stock que la
+// cubre). Mide la demora general, sin importar si fue al pedir o al enviar.
+// El sistema lo actualiza solo cada vez que un usuario con permiso de
+// escritura abre o modifica algo (misma lógica que el cierre automático).
 // ---------------------------------------------------------------------
+let seguimientoEnCurso = false;
+
+async function sincronizarSeguimiento(pend) {
+  if (!puedeEscribir() || seguimientoEnCurso) return;
+  seguimientoEnCurso = true;
+  try {
+    const { data: existentes, error } = await obtenerTodasLasFilas(() => sb.from('seguimiento_faltantes').select('requerimiento_id, estado').order('requerimiento_id'));
+    if (error) { console.warn('seguimiento_faltantes no disponible (¿falta correr sql_seguimiento_faltantes.sql?):', error.message); return; }
+    const mapa = new Map(existentes.map(r => [r.requerimiento_id, r.estado]));
+    const semilla = existentes.length === 0;
+    const hoy = fechaLocalISO(new Date());
+    const vivos = new Set();
+    const nuevos = [], aCerrar = [], aReabrir = [];
+    pend.forEach(f => {
+      vivos.add(f.requerimiento_id);
+      const hayPendiente = Number(f.pendiente) > 0.005;
+      const est = mapa.get(f.requerimiento_id);
+      if (est === undefined) {
+        if (hayPendiente && !esDespachado(f.fecha_salida)) nuevos.push(f);
+      } else if (est === 'abierto' && !hayPendiente) {
+        aCerrar.push(f.requerimiento_id);
+      } else if (est === 'descartado' && hayPendiente) {
+        aReabrir.push(f.requerimiento_id);
+      }
+    });
+    // Si la lista de pendientes vino vacía no se descarta nada (podría ser una falla de lectura).
+    const aDescartar = pend.length === 0 ? [] : existentes.filter(r => r.estado === 'abierto' && !vivos.has(r.requerimiento_id)).map(r => r.requerimiento_id);
+
+    if (nuevos.length) {
+      // La primera vez (tabla vacía) se usa la fecha de alta del pedido; después, el día en que se detecta.
+      let altaPedido = {};
+      if (semilla) {
+        const { data: peds } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, creado_en').order('numero'));
+        (peds || []).forEach(p => { altaPedido[p.numero] = p.creado_en ? fechaLocalISO(new Date(p.creado_en)) : null; });
+      }
+      const filas = nuevos.map(f => ({
+        requerimiento_id: f.requerimiento_id, pedido_numero: f.pedido_numero,
+        material_codigo: f.material_codigo, material_rubro: f.material_rubro,
+        material_nombre: f.material_nombre || null, proveedor: f.proveedor || null,
+        cantidad_pendiente: Number(f.pendiente),
+        fecha_inicio: (semilla && altaPedido[f.pedido_numero]) || hoy,
+        estado: 'abierto', origen: semilla ? 'semilla' : 'sistema',
+      }));
+      for (let i = 0; i < filas.length; i += 500) {
+        const { error: e } = await sb.from('seguimiento_faltantes').upsert(filas.slice(i, i + 500), { onConflict: 'requerimiento_id', ignoreDuplicates: true });
+        if (e) console.warn('No se pudo registrar faltantes nuevos:', e.message);
+      }
+    }
+    const actualizar = async (ids, cambios) => {
+      for (let i = 0; i < ids.length; i += 150) {
+        const { error: e } = await sb.from('seguimiento_faltantes').update({ ...cambios, actualizado_en: new Date().toISOString() }).in('requerimiento_id', ids.slice(i, i + 150));
+        if (e) console.warn('No se pudo actualizar el seguimiento:', e.message);
+      }
+    };
+    if (aCerrar.length) await actualizar(aCerrar, { estado: 'cubierto', fecha_fin: hoy, motivo: null });
+    if (aDescartar.length) await actualizar(aDescartar, { estado: 'descartado', fecha_fin: hoy, motivo: 'La línea se cerró o dejó de contar sin llegar a cubrirse' });
+    if (aReabrir.length) await actualizar(aReabrir, { estado: 'abierto', fecha_fin: null, motivo: null });
+  } catch (e) {
+    console.warn('Seguimiento de faltantes:', e);
+  } finally {
+    seguimientoEnCurso = false;
+  }
+}
+
 let indDatos = null;
 
 function indDias(a, b) {
@@ -1802,133 +1880,216 @@ function indDias(a, b) {
 async function cargarIndicadores() {
   const cont = document.getElementById('ind-contenido');
   cont.innerHTML = '<div style="color:var(--gris-claro);">Cargando...</div>';
-  const { data: compras, error: e1 } = await obtenerTodasLasFilas(() => sb.from('en_camino').select('*').order('id'));
-  if (e1) { cont.innerHTML = `<div class="aviso error">No se pudieron leer las compras en camino: ${escaparHTML(e1.message)}</div>`; return; }
+  const { data: seg, error: e1 } = await obtenerTodasLasFilas(() => sb.from('seguimiento_faltantes').select('*').order('requerimiento_id'));
+  if (e1) { cont.innerHTML = `<div class="aviso error">No se pudo leer el seguimiento (¿corriste sql_seguimiento_faltantes.sql?): ${escaparHTML(e1.message)}</div>`; return; }
   const { data: legado, error: e2 } = await obtenerTodasLasFilas(() => sb.from('faltantes_historial').select('*').order('id'));
-  indDatos = { compras: compras || [], legado: e2 ? [] : (legado || []), errLegado: e2 ? e2.message : null };
+  indDatos = { seg: seg || [], legado: e2 ? [] : (legado || []), errLegado: e2 ? e2.message : null };
   renderizarIndicadores();
 }
 
 function indRegistros() {
   const hoy = fechaLocalISO(new Date());
   const regs = [];
-  indDatos.compras.forEach(r => {
-    const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
-    const compra = r.fecha_compra || (r.creado_en ? fechaLocalISO(new Date(r.creado_en)) : null);
-    const llegada = r.recibido && r.recibido_en ? fechaLocalISO(new Date(r.recibido_en)) : null;
-    const demora = r.recibido && r.fecha_estimada ? indDias(r.fecha_estimada, llegada) : null;
+  indDatos.seg.forEach(r => {
+    if (r.estado !== 'abierto' && r.estado !== 'cubierto') return;
     regs.push({
-      origen: 'actual', proveedor: (r.oc_proveedor || mat.proveedor || '(sin proveedor)').trim(),
-      articulo: mat.nombre || ('Material ' + r.material_codigo), cerrado: !!r.recibido, mes: (compra || '').slice(0, 7),
-      plazo: r.recibido ? indDias(compra, llegada) : null, demora, aTiempo: demora === null ? null : demora <= 0,
-      atrasadaHoy: !r.recibido && !!r.fecha_estimada && r.fecha_estimada < hoy,
+      id: r.requerimiento_id, origen: 'actual', rubro: r.material_rubro, codigo: r.material_codigo, pedido: r.pedido_numero,
+      proveedor: (r.proveedor || '(sin proveedor)').trim(), articulo: r.material_nombre || ('Material ' + r.material_codigo),
+      estado: r.estado, inicio: r.fecha_inicio, fin: r.fecha_fin, semilla: r.origen === 'semilla',
+      dias: r.estado === 'cubierto' ? indDias(r.fecha_inicio, r.fecha_fin) : indDias(r.fecha_inicio, hoy),
     });
   });
   indDatos.legado.forEach(r => {
-    // El sistema anterior rellenaba la salida con ingreso + 21 días: esas fechas no son un compromiso real.
-    const fechaReal = r.fecha_salida && !(r.fecha_ingreso && indDias(r.fecha_ingreso, r.fecha_salida) === 21);
-    const demora = r.hecho && fechaReal && r.fecha_resuelto ? indDias(r.fecha_salida, r.fecha_resuelto) : null;
     regs.push({
-      origen: 'anterior', proveedor: (r.proveedor || '(sin proveedor)').trim(),
-      articulo: r.articulo || '—', cerrado: !!r.hecho, mes: (r.fecha_ingreso || '').slice(0, 7),
-      plazo: r.hecho ? indDias(r.fecha_ingreso, r.fecha_resuelto) : null, demora, aTiempo: demora === null ? null : demora <= 0,
-      atrasadaHoy: false,
+      id: null, origen: 'anterior', rubro: null, codigo: r.codigo, pedido: null,
+      proveedor: (r.proveedor || '(sin proveedor)').trim(), articulo: r.articulo || '—',
+      estado: r.hecho ? 'cubierto' : 'abierto', inicio: r.fecha_ingreso, fin: r.fecha_resuelto, semilla: false,
+      dias: r.hecho ? indDias(r.fecha_ingreso, r.fecha_resuelto) : indDias(r.fecha_ingreso, hoy),
     });
   });
-  return regs;
+  return regs.filter(r => r.dias !== null && r.dias >= 0);
 }
+
+let indOrden = 'edad';
+let indVerTodos = false;
 
 function renderizarIndicadores() {
   if (!indDatos) return;
   const cont = document.getElementById('ind-contenido');
   const fuente = document.getElementById('ind-fuente').value;
+  const rubro = document.getElementById('ind-rubro').value;
   const selProv = document.getElementById('ind-prov');
   const provElegido = selProv.value;
-  let regs = indRegistros().filter(r => fuente === 'ambos' || r.origen === fuente);
+  const palabras = normalizarTexto(document.getElementById('ind-texto').value).split(/\s+/).filter(Boolean);
 
+  let regs = indRegistros().filter(r => (fuente === 'ambos' || r.origen === fuente) && (rubro === 'todos' || r.rubro === rubro));
   const clave = p => normalizarTexto(p).replace(/\s+/g, ' ');
   const nombres = {};
   regs.forEach(r => { const k = clave(r.proveedor); if (!nombres[k]) nombres[k] = r.proveedor; });
   const ordenados = Object.keys(nombres).sort((a, b) => nombres[a].localeCompare(nombres[b]));
   selProv.innerHTML = '<option value="">Todos los proveedores</option>' + ordenados.map(k => `<option value="${escaparHTML(k)}" ${k === provElegido ? 'selected' : ''}>${escaparHTML(nombres[k])}</option>`).join('');
   if (provElegido) regs = regs.filter(r => clave(r.proveedor) === provElegido);
+  if (palabras.length) regs = regs.filter(r => { const t = normalizarTexto(r.codigo + ' ' + r.articulo + ' ' + (r.pedido || '') + ' ' + r.proveedor); return palabras.every(p => t.includes(p)); });
 
-  const media = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
-  const cerrados = regs.filter(r => r.cerrado);
-  const conFecha = cerrados.filter(r => r.aTiempo !== null);
-  const aTiempo = conFecha.filter(r => r.aTiempo).length;
-  const tardes = conFecha.filter(r => !r.aTiempo).length;
-  const atrasoProm = media(conFecha.map(r => r.demora));
-  const plazoProm = media(cerrados.map(r => r.plazo).filter(x => x !== null && x >= 0));
-  const abiertos = regs.filter(r => !r.cerrado);
-  const atrasadasHoy = abiertos.filter(r => r.atrasadaHoy).length;
+  const media = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const mediana = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
   const f1 = n => n === null ? '—' : String(Math.round(n * 10) / 10);
+  const cubiertos = regs.filter(r => r.estado === 'cubierto');
+  const abiertos = regs.filter(r => r.estado === 'abierto');
+  const dCub = cubiertos.map(r => r.dias);
+  const dAb = abiertos.map(r => r.dias);
+  const descartados = indDatos.seg.filter(r => r.estado === 'descartado').length;
+  const ignorados = indDatos.seg.filter(r => r.estado === 'ignorado');
+  const tarjeta = (t, v, s, rojo) => `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:11px; color:var(--gris-claro); text-transform:uppercase;">${t}</div><div style="font-size:26px; font-weight:700;${rojo ? ' color:#b3261e;' : ''}">${v}</div><div style="font-size:11px; color:var(--gris-claro);">${s}</div></div>`;
+  const viejos = abiertos.filter(r => r.dias > 15).length;
+  const masViejo = dAb.length ? Math.max(...dAb) : null;
 
   let html = '';
-  if (indDatos.errLegado) html += `<div class="aviso info">Todavía no se puede leer el historial anterior (¿falta correr sql_alertas_indicadores.sql?): ${escaparHTML(indDatos.errLegado)}</div>`;
-  html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 14px;">
-    ${[
-      ['Registros', regs.length, `${cerrados.length} cerrados · ${abiertos.length} abiertos`],
-      ['A tiempo', conFecha.length ? Math.round(aTiempo / conFecha.length * 100) + '%' : '—', `${aTiempo} de ${conFecha.length} con fecha prometida`],
-      ['Fuera de término', tardes, conFecha.length ? Math.round(tardes / conFecha.length * 100) + '% de los medibles' : 'sin datos medibles'],
-      ['Atraso promedio', atrasoProm === null ? '—' : (atrasoProm > 0 ? '+' : '') + f1(atrasoProm) + ' d', 'vs. fecha prometida (− = antes)'],
-      ['Plazo promedio', plazoProm === null ? '—' : f1(plazoProm) + ' d', 'compra → llegada'],
-      ['Abiertos atrasados', atrasadasHoy, 'en camino y vencida la fecha prometida'],
-    ].map(([t, v, s]) => `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:11px; color:var(--gris-claro); text-transform:uppercase;">${t}</div><div style="font-size:26px; font-weight:700;">${v}</div><div style="font-size:11px; color:var(--gris-claro);">${s}</div></div>`).join('')}
-  </div>
-  <div style="font-size:12px; color:var(--gris-claro); margin-bottom:12px;">Solo se mide la demora donde hay fecha prometida (${conFecha.length} de ${cerrados.length} cerrados). Sin fecha prometida no se cuenta como "a tiempo". Del historial anterior se excluyen las fechas de salida iguales a ingreso + 21 días (valor automático de ese sistema).</div>`;
+  if (indDatos.errLegado) html += `<div class="aviso info">El historial anterior todavía no se puede leer (¿falta correr sql_alertas_indicadores.sql?): ${escaparHTML(indDatos.errLegado)}</div>`;
 
-  if (!provElegido) {
-    const mapa = {};
-    regs.forEach(r => {
-      const k = clave(r.proveedor);
-      if (!mapa[k]) mapa[k] = { ok: 0, tarde: 0, sinF: 0, abierto: 0, demoras: [] };
-      const m = mapa[k];
-      if (!r.cerrado) m.abierto++; else if (r.aTiempo === null) m.sinF++; else if (r.aTiempo) m.ok++; else m.tarde++;
-      if (r.demora !== null) m.demoras.push(r.demora);
-    });
-    const entradas = Object.entries(mapa).sort((a, b) => (b[1].ok + b[1].tarde + b[1].sinF + b[1].abierto) - (a[1].ok + a[1].tarde + a[1].sinF + a[1].abierto));
-    const maxT = Math.max(...entradas.map(([, v]) => v.ok + v.tarde + v.sinF + v.abierto), 1);
-    html += `<h3 style="margin:8px 0;">Por proveedor</h3>
-      <div style="font-size:12px; color:var(--gris-claro); margin-bottom:8px;"><span style="color:#FFCC03;">■</span> a tiempo &nbsp; <span style="color:#C0392B;">■</span> fuera de término &nbsp; <span style="color:#d9d6cc;">■</span> cerrado sin fecha prometida &nbsp; <span style="color:#9a978c;">■</span> abierto</div>` +
-      entradas.map(([k, v]) => {
-        const w = n => (n / maxT * 100).toFixed(1);
-        const prom = media(v.demoras);
-        return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
-          <div style="width:170px; flex-shrink:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escaparHTML(nombres[k])}">${escaparHTML(nombres[k])}</div>
-          <div style="flex:1; height:22px; background:#ecebe6; border-radius:5px; overflow:hidden; display:flex;">
-            <div style="width:${w(v.ok)}%; background:#FFCC03;"></div><div style="width:${w(v.tarde)}%; background:#C0392B; opacity:.8;"></div>
-            <div style="width:${w(v.sinF)}%; background:#d9d6cc;"></div><div style="width:${w(v.abierto)}%; background:#9a978c;"></div></div>
-          <div style="min-width:190px; font-size:12px;"><span style="color:var(--verde);">${v.ok}✓</span> <span style="color:var(--rojo);">${v.tarde}✗</span> <span>${v.sinF}∅</span> <span>${v.abierto}⧖</span>${prom === null ? '' : ` <strong style="color:${prom <= 0 ? 'var(--verde)' : 'var(--rojo)'};">${prom > 0 ? '+' : ''}${f1(prom)}d</strong>`}</div></div>`;
-      }).join('');
+  // 1) Lo que importa hoy: pendientes
+  html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 6px;">
+    ${tarjeta('Pendientes', abiertos.length, 'faltantes sin cubrir')}
+    ${tarjeta('Pendientes hace +15 días', viejos, `de ${abiertos.length} pendientes`, viejos > 0)}
+    ${tarjeta('El más viejo', masViejo === null ? '—' : masViejo + ' d', 'sin cubrir hasta hoy', masViejo > 30)}
+    ${tarjeta('Edad promedio', dAb.length ? f1(media(dAb)) + ' d' : '—', 'de los pendientes')}
+  </div>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:0 0 6px;">
+    ${tarjeta('Resueltos', cubiertos.length, 'llegó mercadería o se cubrió con stock')}
+    ${tarjeta('Demora promedio', dCub.length ? f1(dCub.length ? media(dCub) : null) + ' d' : '—', 'solo de los resueltos')}
+    ${tarjeta('Demora mediana', dCub.length ? f1(mediana(dCub)) + ' d' : '—', 'el caso típico de los resueltos')}
+  </div>
+  <div style="font-size:12px; color:var(--gris-claro); margin-bottom:14px;">⚠ La demora promedio solo cuenta lo ya resuelto: no incluye los pendientes que siguen esperando. Mirá primero los pendientes de arriba. Se mide desde que el faltante entró hasta que se cubrió, sin importar si la demora fue al pedir o al entregar. Una fecha con "~" es aproximada (se tomó la fecha de alta del pedido). Fuera de la medición: ${ignorados.length} ignorados a mano y ${descartados} cerrados sin cubrirse (pedido cerrado, reemplazado o despachado).</div>`;
+
+  // 2) Lista de pendientes con acciones
+  const abActual = abiertos.filter(r => r.origen === 'actual');
+  if (abActual.length) {
+    const orden = {
+      edad: (a, b) => b.dias - a.dias,
+      material: (a, b) => String(a.articulo).localeCompare(String(b.articulo)),
+      pedido: (a, b) => (a.pedido || 0) - (b.pedido || 0),
+      proveedor: (a, b) => String(a.proveedor).localeCompare(String(b.proveedor)),
+    }[indOrden] || ((a, b) => b.dias - a.dias);
+    const lista = abActual.slice().sort(orden);
+    const MAX = indVerTodos ? lista.length : 100;
+    const btn = 'font-size:11px; padding:3px 8px; background:var(--gris-claro);';
+    html += `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0;">
+      <h3 style="margin:0;">Pendientes (${abActual.length})</h3>
+      <label style="font-size:12px;">Ordenar por
+        <select onchange="indOrden=this.value; renderizarIndicadores()">
+          ${[['edad', 'Más viejos primero'], ['material', 'Material'], ['pedido', 'Pedido'], ['proveedor', 'Proveedor']].map(([v, t]) => `<option value="${v}" ${v === indOrden ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></label></div>
+      <div style="font-size:12px; color:var(--gris-claro); margin-bottom:6px;"><strong>Ignorar</strong>: lo saca de la medición. <strong>Resuelto</strong>: lo cierra con la fecha que indiques, si se cubrió por una vía que el sistema no ve. <strong>Ignorar todo el material</strong>: ignora todos los pendientes de ese material (pide confirmación).</div>
+      <table class="pedidos"><thead><tr><th>Material</th><th>Pedido</th><th>Entró</th><th>Edad</th><th></th></tr></thead><tbody>` +
+      lista.slice(0, MAX).map(r => `<tr><td><strong>${r.codigo}</strong> — ${escaparHTML(r.articulo)}<div style="font-size:11px; color:var(--gris-claro);">${r.rubro}${r.proveedor ? ' · ' + escaparHTML(r.proveedor) : ''}</div></td>
+        <td>${r.pedido}</td><td>${r.semilla ? '~' : ''}${formatearFechaCorta(r.inicio)}</td>
+        <td class="pend-num ${r.dias > 15 ? 'pend-pos' : ''}">${r.dias} d</td>
+        <td style="white-space:nowrap;">
+          <button class="primario" style="${btn}" onclick="indResolver(${r.id})">Resuelto</button>
+          <button class="primario" style="${btn}" onclick="indIgnorar(${r.id})">Ignorar</button>
+          <button class="primario" style="${btn}" onclick="indIgnorarMaterial(${r.codigo}, '${r.rubro}')">Ignorar todo el material</button></td></tr>`).join('') +
+      '</tbody></table>' + (lista.length > MAX ? `<div style="font-size:12px; margin-top:6px;">Se muestran ${MAX} de ${lista.length}. <a href="#" onclick="indVerTodos=true; renderizarIndicadores(); return false;">Ver todos</a></div>` : '');
   } else {
-    const ords = regs.slice().sort((a, b) => (b.demora ?? -9999) - (a.demora ?? -9999));
-    html += `<h3 style="margin:8px 0;">Detalle de ${escaparHTML(nombres[provElegido] || '')}</h3><table class="pedidos"><thead><tr><th>Artículo</th><th>Origen</th><th>Estado</th><th>Demora vs. prometida</th><th>Plazo compra → llegada</th></tr></thead><tbody>` +
-      ords.map(r => `<tr><td>${escaparHTML(r.articulo)}</td><td>${r.origen === 'actual' ? 'Sistema actual' : 'Historial anterior'}</td>
-        <td>${r.cerrado ? 'Llegó' : (r.atrasadaHoy ? '<span style="color:var(--rojo);">En camino, atrasada</span>' : 'En camino')}</td>
-        <td class="pend-num ${r.demora === null ? '' : (r.demora <= 0 ? 'pend-cero' : 'pend-pos')}">${r.demora === null ? '<span style="color:var(--gris-claro);">sin fecha prometida</span>' : (r.demora > 0 ? '+' : '') + r.demora + ' d'}</td>
-        <td>${r.plazo === null ? '—' : r.plazo + ' d'}</td></tr>`).join('') + '</tbody></table>';
+    html += '<div style="margin:10px 0; color:var(--gris-claro);">No hay faltantes pendientes con estos filtros.</div>';
   }
 
-  const meses = {};
+  // 3) Por proveedor (plegable, abierto)
+  const mapa = {};
   regs.forEach(r => {
-    if (!r.mes) return;
-    if (!meses[r.mes]) meses[r.mes] = { total: 0, cerrados: 0, demoras: [] };
-    meses[r.mes].total++; if (r.cerrado) meses[r.mes].cerrados++;
-    if (r.demora !== null) meses[r.mes].demoras.push(r.demora);
+    const k = clave(r.proveedor);
+    if (!mapa[k]) mapa[k] = { cub: [], ab: [] };
+    (r.estado === 'cubierto' ? mapa[k].cub : mapa[k].ab).push(r.dias);
   });
+  const filasProv = Object.entries(mapa).sort((a, b) => (b[1].ab.length - a[1].ab.length) || (b[1].cub.length - a[1].cub.length));
+  const maxProm = Math.max(...filasProv.map(([, v]) => media(v.cub) || 0), 1);
+  if (filasProv.length) {
+    html += `<details open style="margin-top:18px;"><summary style="cursor:pointer; font-weight:700; font-size:16px;">Por proveedor del material</summary>
+      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Proveedor</th><th>Pendientes</th><th>Edad prom. pendientes</th><th>Resueltos</th><th>Demora prom. resueltos</th></tr></thead><tbody>` +
+      filasProv.map(([k, v]) => {
+        const pm = media(v.cub), pa = media(v.ab);
+        return `<tr><td>${escaparHTML(nombres[k])}</td><td>${v.ab.length}</td><td class="${pa !== null && pa > 15 ? 'pend-pos' : ''}">${pa === null ? '—' : f1(pa) + ' d'}</td><td>${v.cub.length}</td>
+          <td style="min-width:200px;">${pm === null ? '—' : `<div style="display:flex; align-items:center; gap:6px;"><div style="height:10px; width:${Math.max(pm / maxProm * 120, 3).toFixed(0)}px; background:#FFCC03; border-radius:3px;"></div><strong>${f1(pm)} d</strong></div>`}</td></tr>`;
+      }).join('') + '</tbody></table></details>';
+  }
+
+  // 4) Por mes (plegado)
+  const meses = {};
+  cubiertos.forEach(r => { const k = (r.fin || '').slice(0, 7); if (!k) return; (meses[k] = meses[k] || []).push(r.dias); });
   const NOMBRES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-  const lista = Object.entries(meses).sort((a, b) => b[0].localeCompare(a[0]));
-  if (lista.length) {
-    html += `<h3 style="margin:18px 0 8px;">Por mes</h3><div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px;">` +
-      lista.map(([k, v]) => {
-        const [y, m] = k.split('-'); const prom = media(v.demoras);
-        return `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:12px; font-weight:700; color:var(--gris-claro);">${NOMBRES[parseInt(m) - 1].toUpperCase()} ${y}</div>
-          <div style="font-size:24px; font-weight:700;">${v.total}</div><div style="font-size:12px;">${v.cerrados} cerrados · ${v.total - v.cerrados} abiertos</div>
-          <div style="font-size:12px; margin-top:4px; color:${prom === null ? 'var(--gris-claro)' : (prom <= 0 ? 'var(--verde)' : 'var(--rojo)')};">${prom === null ? 'sin demora medible' : 'atraso prom. ' + (prom > 0 ? '+' : '') + f1(prom) + ' d'}</div></div>`;
-      }).join('') + '</div>';
+  const lm = Object.entries(meses).sort((a, b) => b[0].localeCompare(a[0]));
+  if (lm.length) {
+    html += `<details style="margin-top:14px;"><summary style="cursor:pointer; font-weight:700; font-size:16px;">Resueltos por mes</summary><div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; margin-top:6px;">` +
+      lm.map(([k, v]) => { const [y, m] = k.split('-'); return `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:12px; font-weight:700; color:var(--gris-claro);">${NOMBRES[parseInt(m) - 1].toUpperCase()} ${y}</div>
+        <div style="font-size:24px; font-weight:700;">${v.length}</div><div style="font-size:12px;">resueltos · demora prom. ${f1(media(v))} d</div></div>`; }).join('') + '</div></details>';
+  }
+
+  if (ignorados.length) {
+    html += `<details style="margin-top:14px;"><summary style="cursor:pointer; color:var(--gris-claro);">${ignorados.length} ignorado(s) a mano</summary>
+      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Material</th><th>Pedido</th><th>Motivo</th><th></th></tr></thead><tbody>` +
+      ignorados.slice(0, 200).map(r => `<tr><td>${r.material_codigo} — ${escaparHTML(r.material_nombre || '')}</td><td>${r.pedido_numero}</td><td>${escaparHTML(r.motivo || '')}</td>
+        <td><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="indRestaurar(${r.requerimiento_id})">Restaurar</button></td></tr>`).join('') + '</tbody></table></details>';
   }
   cont.innerHTML = html;
+}
+
+// Cuadro propio (en lugar de prompt del navegador). campos: [{id,label,valor,tipo}]
+function indDialogo({ titulo, texto, campos = [], boton = 'Aceptar', peligro = false }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1100;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:8px;padding:20px;max-width:440px;width:92%;box-shadow:0 8px 30px rgba(0,0,0,.3);border-top:4px solid ${peligro ? '#b3261e' : '#FFCC03'};">
+      <h3 style="margin:0 0 8px;">${titulo}</h3>
+      <div style="font-size:14px; margin-bottom:12px;">${texto}</div>
+      ${campos.map(c => `<label style="display:block;font-size:12px;margin-bottom:8px;">${c.label}<input id="ind-dlg-${c.id}" type="${c.tipo || 'text'}" value="${escaparHTML(c.valor || '')}" style="display:block;width:100%;box-sizing:border-box;margin-top:3px;"></label>`).join('')}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button id="ind-dlg-no" class="primario" style="background:var(--gris-claro);">Cancelar</button>
+        <button id="ind-dlg-si" class="primario" style="${peligro ? 'background:#b3261e;color:#fff;' : ''}">${boton}</button></div></div>`;
+    document.body.appendChild(ov);
+    const cerrar = v => { ov.remove(); resolve(v); };
+    ov.querySelector('#ind-dlg-no').onclick = () => cerrar(null);
+    ov.addEventListener('click', e => { if (e.target === ov) cerrar(null); });
+    ov.querySelector('#ind-dlg-si').onclick = () => {
+      const r = {}; campos.forEach(c => r[c.id] = ov.querySelector('#ind-dlg-' + c.id).value.trim()); cerrar(r);
+    };
+    const primero = ov.querySelector('input'); if (primero) primero.focus();
+  });
+}
+
+async function indCambiar(ids, cambios, errorTxt) {
+  for (let i = 0; i < ids.length; i += 150) {
+    const { error } = await sb.from('seguimiento_faltantes').update({ ...cambios, actualizado_en: new Date().toISOString() }).in('requerimiento_id', ids.slice(i, i + 150));
+    if (error) { alert(errorTxt + ': ' + error.message); return false; }
+  }
+  return true;
+}
+async function indIgnorar(id) {
+  const f = indDatos.seg.find(r => r.requerimiento_id === id);
+  const r = await indDialogo({ titulo: 'Ignorar este faltante', texto: f ? `<strong>${f.material_codigo}</strong> — ${escaparHTML(f.material_nombre || '')} (pedido ${f.pedido_numero}). Dejará de contar en los indicadores.` : '', campos: [{ id: 'motivo', label: 'Motivo (opcional)' }], boton: 'Ignorar' });
+  if (!r) return;
+  if (await indCambiar([id], { estado: 'ignorado', motivo: r.motivo || 'Ignorado a mano' }, 'No se pudo ignorar')) await cargarIndicadores();
+}
+async function indIgnorarMaterial(codigo, rubro) {
+  const filas = indDatos.seg.filter(r => r.estado === 'abierto' && r.material_codigo === codigo && r.material_rubro === rubro);
+  if (!filas.length) return;
+  const pedidos = [...new Set(filas.map(r => r.pedido_numero))].sort((a, b) => a - b);
+  const r = await indDialogo({
+    titulo: '⚠ Ignorar todo el material',
+    texto: `Vas a ignorar <strong>${filas.length} faltante(s)</strong> de <strong>${codigo} — ${escaparHTML(filas[0].material_nombre || '')}</strong>, en ${pedidos.length} pedido(s): ${pedidos.slice(0, 12).join(', ')}${pedidos.length > 12 ? '…' : ''}.<br>Dejarán de contar en los indicadores. Podés restaurarlos desde "ignorados a mano".`,
+    campos: [{ id: 'motivo', label: 'Motivo (opcional)' }], boton: `Ignorar ${filas.length}`, peligro: true,
+  });
+  if (!r) return;
+  if (await indCambiar(filas.map(x => x.requerimiento_id), { estado: 'ignorado', motivo: r.motivo || 'Material ignorado a mano' }, 'No se pudo ignorar')) await cargarIndicadores();
+}
+async function indResolver(id) {
+  const f = indDatos.seg.find(r => r.requerimiento_id === id);
+  const r = await indDialogo({ titulo: 'Marcar como resuelto', texto: f ? `<strong>${f.material_codigo}</strong> — ${escaparHTML(f.material_nombre || '')} (pedido ${f.pedido_numero}).` : '', campos: [{ id: 'fecha', label: '¿Qué día se cubrió?', tipo: 'date', valor: fechaLocalISO(new Date()) }], boton: 'Marcar resuelto' });
+  if (!r) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.fecha)) { alert('Fecha no válida.'); return; }
+  if (f && r.fecha < f.fecha_inicio) { alert('La fecha no puede ser anterior al ingreso del faltante (' + f.fecha_inicio + ').'); return; }
+  if (await indCambiar([id], { estado: 'cubierto', fecha_fin: r.fecha, motivo: 'Resuelto a mano' }, 'No se pudo cerrar')) await cargarIndicadores();
+}
+async function indRestaurar(id) {
+  if (await indCambiar([id], { estado: 'abierto', fecha_fin: null, motivo: null }, 'No se pudo restaurar')) await cargarIndicadores();
 }
 
 async function importarHistorialFaltantes() {
