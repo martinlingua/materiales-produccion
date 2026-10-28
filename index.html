@@ -673,8 +673,18 @@
           <label>Pedido (opcional)
             <select id="etq-pedido" onchange="etqCambioPedido()" style="min-width:320px;"></select>
           </label>
-          <label>Estructura
-            <select id="etq-estructura" onchange="etqRenderPiezas()" style="min-width:240px; max-width:420px;"></select>
+          <label>Estructuras (podés elegir varias)
+            <details id="etq-est-caja" style="position:relative; min-width:260px;">
+              <summary id="etq-est-resumen" style="cursor:pointer; padding:6px 10px; border:1px solid #ccc; border-radius:4px; background:#fff; list-style:none;">Todas las estructuras</summary>
+              <div style="position:absolute; z-index:50; top:100%; left:0; width:min(460px, 90vw); max-height:340px; overflow:auto; background:#fff; border:1px solid #ccc; border-radius:4px; box-shadow:0 6px 18px rgba(0,0,0,.2); padding:8px;">
+                <input type="text" id="etq-est-buscar" placeholder="Buscar estructura..." oninput="etqFiltrarListaEst()" style="width:100%; box-sizing:border-box; margin-bottom:6px;">
+                <div style="display:flex; gap:6px; margin-bottom:6px;">
+                  <button type="button" class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="etqEstMarcar(true)">Marcar las que se ven</button>
+                  <button type="button" class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="etqEstMarcar(false)">Ninguna</button>
+                </div>
+                <div id="etq-est-lista"></div>
+              </div>
+            </details>
           </label>
           <label>Buscar pieza
             <input type="text" id="etq-buscar-pieza" placeholder="Parte del nombre..." oninput="etqRenderPiezas()" style="width:160px;">
@@ -3153,16 +3163,68 @@ function etqPoblarPedidos() {
   etqCambioPedido();
 }
 
-function etqCambioPedido() {
+// Estructuras disponibles: las del pedido elegido o, sin pedido, las de todos
+// los pedidos que cumplen el filtro (distribuidor / fechas / búsqueda).
+let etqEstLista = [];                 // [{ nombre, piezas, pedidos }]
+const etqEstSel = new Set();          // estructuras tildadas (vacío = todas)
+
+function etqPiezasBase() {
   const ped = Number(document.getElementById('etq-pedido').value);
-  const sel = document.getElementById('etq-estructura');
+  if (ped) return piezasCache.filter(p => p.pedido_numero === ped);
+  if (etqHayFiltro()) { const c = etqPedidosFiltrados(); return piezasCache.filter(p => p.pedido_numero in c); }
+  return [];
+}
+
+function etqCambioPedido() {
   const cuenta = {};
-  if (ped) piezasCache.filter(p => p.pedido_numero === ped).forEach(p => cuenta[p.estructura] = (cuenta[p.estructura] || 0) + 1);
-  const estructuras = Object.keys(cuenta).sort(etqTxt);
-  sel.innerHTML = ped
-    ? `<option value="">Todas las estructuras</option>` + estructuras.map(e => `<option value="${escaparHTML(e)}">${escaparHTML(e)} (${cuenta[e]})</option>`).join('')
-    : '<option value="">(elegí un pedido para filtrar por estructura)</option>';
-  sel.disabled = !ped;
+  etqPiezasBase().forEach(p => {
+    const c = cuenta[p.estructura] || (cuenta[p.estructura] = { piezas: 0, pedidos: new Set() });
+    c.piezas++; c.pedidos.add(p.pedido_numero);
+  });
+  etqEstLista = Object.keys(cuenta).sort(etqTxt).map(n => ({ nombre: n, piezas: cuenta[n].piezas, pedidos: cuenta[n].pedidos.size }));
+  // Lo tildado que ya no está disponible con el filtro actual se descarta.
+  const disponibles = new Set(etqEstLista.map(e => e.nombre));
+  [...etqEstSel].forEach(n => { if (!disponibles.has(n)) etqEstSel.delete(n); });
+  etqDibujarListaEst();
+  etqRenderPiezas();
+}
+
+function etqDibujarListaEst() {
+  const cont = document.getElementById('etq-est-lista');
+  cont.innerHTML = etqEstLista.length ? etqEstLista.map((e, i) => `
+    <label data-txt="${escaparHTML(normalizarTexto(e.nombre))}" style="display:flex; align-items:flex-start; gap:6px; font-size:12px; padding:3px 2px; cursor:pointer;">
+      <input type="checkbox" ${etqEstSel.has(e.nombre) ? 'checked' : ''} onchange="etqEstToggle(${i}, this.checked)">
+      <span>${escaparHTML(e.nombre)} <span style="color:var(--gris-claro);">(${e.piezas} piezas${e.pedidos > 1 ? ' · ' + e.pedidos + ' pedidos' : ''})</span></span>
+    </label>`).join('') : '<div style="font-size:12px; color:var(--gris-claro);">Elegí un distribuidor, un rango de fechas o un pedido para ver las estructuras.</div>';
+  etqFiltrarListaEst();
+  etqResumenEst();
+}
+
+function etqFiltrarListaEst() {
+  const q = normalizarTexto(document.getElementById('etq-est-buscar').value).trim();
+  document.querySelectorAll('#etq-est-lista label').forEach(l => { l.style.display = !q || l.dataset.txt.includes(q) ? 'flex' : 'none'; });
+}
+
+function etqResumenEst() {
+  const n = etqEstSel.size;
+  document.getElementById('etq-est-resumen').textContent = n === 0
+    ? `Todas las estructuras (${etqEstLista.length})`
+    : n === 1 ? [...etqEstSel][0] : `${n} estructuras seleccionadas`;
+}
+
+function etqEstToggle(i, marcado) {
+  const e = etqEstLista[i]; if (!e) return;
+  if (marcado) etqEstSel.add(e.nombre); else etqEstSel.delete(e.nombre);
+  etqResumenEst();
+  etqRenderPiezas();
+}
+
+function etqEstMarcar(marcar) {
+  if (!marcar) etqEstSel.clear();
+  else document.querySelectorAll('#etq-est-lista label').forEach(l => {
+    if (l.style.display !== 'none') { const i = [...l.parentNode.children].indexOf(l); if (etqEstLista[i]) etqEstSel.add(etqEstLista[i].nombre); }
+  });
+  etqDibujarListaEst();
   etqRenderPiezas();
 }
 
@@ -3176,8 +3238,7 @@ function etqFiltradas(alcance) {
   else if (etqHayFiltro()) { const c = etqPedidosFiltrados(); filas = piezasCache.filter(p => p.pedido_numero in c); }
   else return [];
   if (alcance === 'todo') return etqOrdenar(filas);
-  const est = document.getElementById('etq-estructura').value;
-  if (est) filas = filas.filter(p => p.estructura === est);
+  if (etqEstSel.size) filas = filas.filter(p => etqEstSel.has(p.estructura));
   const q = normalizarTexto(document.getElementById('etq-buscar-pieza').value);
   if (q) filas = filas.filter(p => normalizarTexto(p.pieza + ' ' + (p.parte || '') + ' ' + p.idhc_g + ' ' + (p.cod_pieza || '')).includes(q));
   return etqOrdenar(filas);
