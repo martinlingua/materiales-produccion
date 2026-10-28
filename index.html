@@ -673,7 +673,7 @@
           <label>Pedido (opcional)
             <select id="etq-pedido" onchange="etqCambioPedido()" style="min-width:320px;"></select>
           </label>
-          <label>Estructuras (podés elegir varias)
+          <div style="display:flex; flex-direction:column; font-size:12px; color:var(--gris-claro); gap:4px;">Estructuras (podés elegir varias)
             <details id="etq-est-caja" style="position:relative; min-width:260px;">
               <summary id="etq-est-resumen" style="cursor:pointer; padding:6px 10px; border:1px solid #ccc; border-radius:4px; background:#fff; list-style:none;">Todas las estructuras</summary>
               <div style="position:absolute; z-index:50; top:100%; left:0; width:min(460px, 90vw); max-height:340px; overflow:auto; background:#fff; border:1px solid #ccc; border-radius:4px; box-shadow:0 6px 18px rgba(0,0,0,.2); padding:8px;">
@@ -685,7 +685,7 @@
                 <div id="etq-est-lista"></div>
               </div>
             </details>
-          </label>
+          </div>
           <label>Buscar pieza
             <input type="text" id="etq-buscar-pieza" placeholder="Parte del nombre..." oninput="etqRenderPiezas()" style="width:160px;">
           </label>
@@ -3192,8 +3192,8 @@ function etqCambioPedido() {
 function etqDibujarListaEst() {
   const cont = document.getElementById('etq-est-lista');
   cont.innerHTML = etqEstLista.length ? etqEstLista.map((e, i) => `
-    <label data-txt="${escaparHTML(normalizarTexto(e.nombre))}" style="display:flex; align-items:flex-start; gap:6px; font-size:12px; padding:3px 2px; cursor:pointer;">
-      <input type="checkbox" ${etqEstSel.has(e.nombre) ? 'checked' : ''} onchange="etqEstToggle(${i}, this.checked)">
+    <label data-txt="${escaparHTML(normalizarTexto(e.nombre))}" style="display:flex; flex-direction:row; align-items:center; gap:8px; font-size:12px; color:#333; padding:3px 2px; cursor:pointer;">
+      <input type="checkbox" style="flex:none; width:auto; min-width:0; padding:0; margin:0;" ${etqEstSel.has(e.nombre) ? 'checked' : ''} onchange="etqEstToggle(${i}, this.checked)">
       <span>${escaparHTML(e.nombre)} <span style="color:var(--gris-claro);">(${e.piezas} piezas${e.pedidos > 1 ? ' · ' + e.pedidos + ' pedidos' : ''})</span></span>
     </label>`).join('') : '<div style="font-size:12px; color:var(--gris-claro);">Elegí un distribuidor, un rango de fechas o un pedido para ver las estructuras.</div>';
   etqFiltrarListaEst();
