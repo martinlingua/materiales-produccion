@@ -439,6 +439,9 @@
           <label>Buscar
             <input type="text" id="ind-texto" placeholder="Material, código o pedido..." oninput="renderizarIndicadores()">
           </label>
+          <label style="display:flex; align-items:center; gap:5px; align-self:end; padding-bottom:6px;">
+            <input type="checkbox" id="ind-pedidos" checked onchange="renderizarIndicadores()"> Mostrar pedidos afectados
+          </label>
         </div>
         <div id="ind-contenido"></div>
       </div>
@@ -1918,6 +1921,7 @@ function renderizarIndicadores() {
   const cont = document.getElementById('ind-contenido');
   const fuente = document.getElementById('ind-fuente').value;
   const rubro = document.getElementById('ind-rubro').value;
+  const conPedidos = document.getElementById('ind-pedidos').checked;
   const selProv = document.getElementById('ind-prov');
   const provElegido = selProv.value;
   const palabras = normalizarTexto(document.getElementById('ind-texto').value).split(/\s+/).filter(Boolean);
@@ -1934,85 +1938,106 @@ function renderizarIndicadores() {
   const media = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
   const mediana = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
   const f1 = n => n === null ? '—' : String(Math.round(n * 10) / 10);
+  const fq = n => n === null || n === undefined ? '—' : String(Math.round(Number(n) * 100) / 100);
   const cubiertos = regs.filter(r => r.estado === 'cubierto');
   const abiertos = regs.filter(r => r.estado === 'abierto');
   const dCub = cubiertos.map(r => r.dias);
-  const dAb = abiertos.map(r => r.dias);
   const descartados = indDatos.seg.filter(r => r.estado === 'descartado').length;
   const ignorados = indDatos.seg.filter(r => r.estado === 'ignorado');
+
+  // Pendientes agrupados por material: lo que sigue faltando una vez repartido
+  // el stock entre los pedidos (v_pendientes ya descuenta lo que el stock cubre).
+  const vivas = {};
+  ['herraje', 'insumo'].forEach(ru => (datosPendientes[ru] || []).forEach(f => { vivas[f.requerimiento_id] = f; }));
+  const grupos = {};
+  abiertos.forEach(r => {
+    const k = (r.rubro || '?') + '|' + r.codigo;
+    const g = grupos[k] || (grupos[k] = { codigo: r.codigo, rubro: r.rubro, nombre: r.articulo, proveedor: r.proveedor, lineas: [], pendiente: 0, stock: null, umed: '', pedidos: new Set(), dias: 0, inicio: r.inicio, semilla: false, actual: r.origen === 'actual' });
+    g.lineas.push(r);
+    if (r.pedido !== null) g.pedidos.add(r.pedido);
+    const v = vivas[r.id];
+    if (v) {
+      g.pendiente += Number(v.pendiente) || 0;
+      if (v.stock_general_disponible != null) g.stock = Number(v.stock_general_disponible);
+      if (v.umed) g.umed = v.umed;
+    }
+    if (r.dias > g.dias) { g.dias = r.dias; g.inicio = r.inicio; g.semilla = r.semilla; }
+  });
+  const listaG = Object.values(grupos);
+  const dG = listaG.map(g => g.dias);
+  const viejos = listaG.filter(g => g.dias > 15).length;
+  const masViejo = dG.length ? Math.max(...dG) : null;
   const tarjeta = (t, v, s, rojo) => `<div class="panel" style="margin:0; padding:12px 14px;"><div style="font-size:11px; color:var(--gris-claro); text-transform:uppercase;">${t}</div><div style="font-size:26px; font-weight:700;${rojo ? ' color:#b3261e;' : ''}">${v}</div><div style="font-size:11px; color:var(--gris-claro);">${s}</div></div>`;
-  const viejos = abiertos.filter(r => r.dias > 15).length;
-  const masViejo = dAb.length ? Math.max(...dAb) : null;
 
   let html = '';
   if (indDatos.errLegado) html += `<div class="aviso info">El historial anterior todavía no se puede leer (¿falta correr sql_alertas_indicadores.sql?): ${escaparHTML(indDatos.errLegado)}</div>`;
 
-  // 1) Lo que importa hoy: pendientes
   html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 6px;">
-    ${tarjeta('Pendientes', abiertos.length, 'faltantes sin cubrir')}
-    ${tarjeta('Pendientes hace +15 días', viejos, `de ${abiertos.length} pendientes`, viejos > 0)}
-    ${tarjeta('El más viejo', masViejo === null ? '—' : masViejo + ' d', 'sin cubrir hasta hoy', masViejo > 30)}
-    ${tarjeta('Edad promedio', dAb.length ? f1(media(dAb)) + ' d' : '—', 'de los pendientes')}
+    ${tarjeta('Materiales faltantes', listaG.length, `${abiertos.length} línea(s) de pedido sin cubrir`)}
+    ${tarjeta('Faltando hace +15 días', viejos, `de ${listaG.length} materiales`, viejos > 0)}
+    ${tarjeta('El más viejo', masViejo === null ? '—' : masViejo + ' d', 'sin cubrirse hasta hoy', masViejo > 30)}
+    ${tarjeta('Edad promedio', dG.length ? f1(media(dG)) + ' d' : '—', 'de los materiales faltantes')}
   </div>
   <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:0 0 6px;">
-    ${tarjeta('Resueltos', cubiertos.length, 'llegó mercadería o se cubrió con stock')}
-    ${tarjeta('Demora promedio', dCub.length ? f1(dCub.length ? media(dCub) : null) + ' d' : '—', 'solo de los resueltos')}
+    ${tarjeta('Resueltos', cubiertos.length, 'líneas de pedido cubiertas')}
+    ${tarjeta('Demora promedio', dCub.length ? f1(media(dCub)) + ' d' : '—', 'solo de los resueltos')}
     ${tarjeta('Demora mediana', dCub.length ? f1(mediana(dCub)) + ' d' : '—', 'el caso típico de los resueltos')}
   </div>
-  <div style="font-size:12px; color:var(--gris-claro); margin-bottom:14px;">⚠ La demora promedio solo cuenta lo ya resuelto: no incluye los pendientes que siguen esperando. Mirá primero los pendientes de arriba. Se mide desde que el faltante entró hasta que se cubrió, sin importar si la demora fue al pedir o al entregar. Una fecha con "~" es aproximada (se tomó la fecha de alta del pedido). Fuera de la medición: ${ignorados.length} ignorados a mano y ${descartados} cerrados sin cubrirse (pedido cerrado, reemplazado o despachado).</div>`;
+  <div style="font-size:12px; color:var(--gris-claro); margin-bottom:14px;">⚠ La demora promedio solo cuenta lo ya resuelto: no incluye lo que sigue esperando. Mirá primero los materiales faltantes. Solo cuentan los pedidos que el stock no llega a cubrir. La edad de cada material es la de su faltante más viejo, medida desde que entró hasta que se cubrió, sin importar si la demora fue al pedir o al entregar. Una fecha con "~" es aproximada (se tomó la fecha de alta del pedido). Fuera de la medición: ${ignorados.length} ignorados a mano y ${descartados} cerrados sin cubrirse (pedido cerrado, reemplazado o despachado).</div>`;
 
-  // 2) Lista de pendientes con acciones
-  const abActual = abiertos.filter(r => r.origen === 'actual');
-  if (abActual.length) {
+  if (listaG.length) {
     const orden = {
       edad: (a, b) => b.dias - a.dias,
-      material: (a, b) => String(a.articulo).localeCompare(String(b.articulo)),
-      pedido: (a, b) => (a.pedido || 0) - (b.pedido || 0),
-      proveedor: (a, b) => String(a.proveedor).localeCompare(String(b.proveedor)),
+      material: (a, b) => String(a.nombre).localeCompare(String(b.nombre)),
+      pendiente: (a, b) => b.pendiente - a.pendiente,
+      pedidos: (a, b) => b.pedidos.size - a.pedidos.size,
+      proveedor: (a, b) => String(a.proveedor).localeCompare(String(b.proveedor)) || (b.dias - a.dias),
     }[indOrden] || ((a, b) => b.dias - a.dias);
-    const lista = abActual.slice().sort(orden);
+    const lista = listaG.slice().sort(orden);
     const MAX = indVerTodos ? lista.length : 100;
     const btn = 'font-size:11px; padding:3px 8px; background:var(--gris-claro);';
     html += `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0;">
-      <h3 style="margin:0;">Pendientes (${abActual.length})</h3>
+      <h3 style="margin:0;">Materiales faltantes (${listaG.length})</h3>
       <label style="font-size:12px;">Ordenar por
         <select onchange="indOrden=this.value; renderizarIndicadores()">
-          ${[['edad', 'Más viejos primero'], ['material', 'Material'], ['pedido', 'Pedido'], ['proveedor', 'Proveedor']].map(([v, t]) => `<option value="${v}" ${v === indOrden ? 'selected' : ''}>${t}</option>`).join('')}
+          ${[['edad', 'Más viejos primero'], ['pendiente', 'Mayor faltante'], ['pedidos', 'Más pedidos afectados'], ['material', 'Material'], ['proveedor', 'Proveedor']].map(([v, t]) => `<option value="${v}" ${v === indOrden ? 'selected' : ''}>${t}</option>`).join('')}
         </select></label></div>
-      <div style="font-size:12px; color:var(--gris-claro); margin-bottom:6px;"><strong>Ignorar</strong>: lo saca de la medición. <strong>Resuelto</strong>: lo cierra con la fecha que indiques, si se cubrió por una vía que el sistema no ve. <strong>Ignorar todo el material</strong>: ignora todos los pendientes de ese material (pide confirmación).</div>
-      <table class="pedidos"><thead><tr><th>Material</th><th>Pedido</th><th>Entró</th><th>Edad</th><th></th></tr></thead><tbody>` +
-      lista.slice(0, MAX).map(r => `<tr><td><strong>${r.codigo}</strong> — ${escaparHTML(r.articulo)}<div style="font-size:11px; color:var(--gris-claro);">${r.rubro}${r.proveedor ? ' · ' + escaparHTML(r.proveedor) : ''}</div></td>
-        <td>${r.pedido}</td><td>${r.semilla ? '~' : ''}${formatearFechaCorta(r.inicio)}</td>
-        <td class="pend-num ${r.dias > 15 ? 'pend-pos' : ''}">${r.dias} d</td>
-        <td style="white-space:nowrap;">
-          <button class="primario" style="${btn}" onclick="indResolver(${r.id})">Resuelto</button>
-          <button class="primario" style="${btn}" onclick="indIgnorar(${r.id})">Ignorar</button>
-          <button class="primario" style="${btn}" onclick="indIgnorarMaterial(${r.codigo}, '${r.rubro}')">Ignorar todo el material</button></td></tr>`).join('') +
+      <div style="font-size:12px; color:var(--gris-claro); margin-bottom:6px;"><strong>Ignorar</strong>: saca el material de la medición (pide confirmación). <strong>Resuelto</strong>: lo cierra con la fecha que indiques, si se cubrió por una vía que el sistema no ve. Ambos actúan sobre todos los pedidos afectados de ese material.</div>
+      <table class="pedidos"><thead><tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Faltante total</th><th>Stock actual</th><th>Pedidos afectados</th><th>Faltando desde</th><th>Edad</th><th></th></tr></thead><tbody>` +
+      lista.slice(0, MAX).map(g => {
+        const peds = [...g.pedidos].sort((a, b) => a - b);
+        const acciones = g.actual && g.rubro ? `<button class="primario" style="${btn}" onclick="indResolverMaterial(${g.codigo}, '${g.rubro}')">Resuelto</button>
+          <button class="primario" style="${btn}" onclick="indIgnorarMaterial(${g.codigo}, '${g.rubro}')">Ignorar</button>` : '<span style="font-size:11px; color:var(--gris-claro);">historial</span>';
+        return `<tr><td><strong>${g.codigo}</strong></td><td>${escaparHTML(g.nombre)}<div style="font-size:11px; color:var(--gris-claro);">${g.rubro || ''}</div></td>
+          <td>${escaparHTML(g.proveedor || '')}</td>
+          <td class="pend-num pend-pos">${g.actual ? fq(g.pendiente) + (g.umed ? ' ' + escaparHTML(g.umed) : '') : '—'}</td>
+          <td>${g.stock === null ? '—' : '<strong>' + fq(g.stock) + '</strong>'}</td>
+          <td>${peds.length ? `<strong>${peds.length}</strong>${conPedidos ? `<div style="font-size:11px; color:var(--gris-claro);">${peds.slice(0, 20).join(', ')}${peds.length > 20 ? '…' : ''}</div>` : ''}` : '—'}</td>
+          <td>${g.semilla ? '~' : ''}${formatearFechaCorta(g.inicio)}</td>
+          <td class="pend-num ${g.dias > 15 ? 'pend-pos' : ''}">${g.dias} d</td>
+          <td style="white-space:nowrap;">${acciones}</td></tr>`;
+      }).join('') +
       '</tbody></table>' + (lista.length > MAX ? `<div style="font-size:12px; margin-top:6px;">Se muestran ${MAX} de ${lista.length}. <a href="#" onclick="indVerTodos=true; renderizarIndicadores(); return false;">Ver todos</a></div>` : '');
   } else {
-    html += '<div style="margin:10px 0; color:var(--gris-claro);">No hay faltantes pendientes con estos filtros.</div>';
+    html += '<div style="margin:10px 0; color:var(--gris-claro);">No hay materiales faltantes con estos filtros.</div>';
   }
 
-  // 3) Por proveedor (plegable, abierto)
+  // Por proveedor: materiales faltantes y demora de lo resuelto
   const mapa = {};
-  regs.forEach(r => {
-    const k = clave(r.proveedor);
-    if (!mapa[k]) mapa[k] = { cub: [], ab: [] };
-    (r.estado === 'cubierto' ? mapa[k].cub : mapa[k].ab).push(r.dias);
-  });
+  listaG.forEach(g => { const k = clave(g.proveedor); (mapa[k] = mapa[k] || { cub: [], ab: [] }).ab.push(g.dias); });
+  cubiertos.forEach(r => { const k = clave(r.proveedor); (mapa[k] = mapa[k] || { cub: [], ab: [] }).cub.push(r.dias); });
   const filasProv = Object.entries(mapa).sort((a, b) => (b[1].ab.length - a[1].ab.length) || (b[1].cub.length - a[1].cub.length));
   const maxProm = Math.max(...filasProv.map(([, v]) => media(v.cub) || 0), 1);
   if (filasProv.length) {
     html += `<details open style="margin-top:18px;"><summary style="cursor:pointer; font-weight:700; font-size:16px;">Por proveedor del material</summary>
-      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Proveedor</th><th>Pendientes</th><th>Edad prom. pendientes</th><th>Resueltos</th><th>Demora prom. resueltos</th></tr></thead><tbody>` +
+      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Proveedor</th><th>Materiales faltantes</th><th>Edad prom. faltantes</th><th>Resueltos</th><th>Demora prom. resueltos</th></tr></thead><tbody>` +
       filasProv.map(([k, v]) => {
         const pm = media(v.cub), pa = media(v.ab);
-        return `<tr><td>${escaparHTML(nombres[k])}</td><td>${v.ab.length}</td><td class="${pa !== null && pa > 15 ? 'pend-pos' : ''}">${pa === null ? '—' : f1(pa) + ' d'}</td><td>${v.cub.length}</td>
+        return `<tr><td>${escaparHTML(nombres[k] || k)}</td><td>${v.ab.length}</td><td class="${pa !== null && pa > 15 ? 'pend-pos' : ''}">${pa === null ? '—' : f1(pa) + ' d'}</td><td>${v.cub.length}</td>
           <td style="min-width:200px;">${pm === null ? '—' : `<div style="display:flex; align-items:center; gap:6px;"><div style="height:10px; width:${Math.max(pm / maxProm * 120, 3).toFixed(0)}px; background:#FFCC03; border-radius:3px;"></div><strong>${f1(pm)} d</strong></div>`}</td></tr>`;
       }).join('') + '</tbody></table></details>';
   }
 
-  // 4) Por mes (plegado)
   const meses = {};
   cubiertos.forEach(r => { const k = (r.fin || '').slice(0, 7); if (!k) return; (meses[k] = meses[k] || []).push(r.dias); });
   const NOMBRES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -2024,10 +2049,12 @@ function renderizarIndicadores() {
   }
 
   if (ignorados.length) {
-    html += `<details style="margin-top:14px;"><summary style="cursor:pointer; color:var(--gris-claro);">${ignorados.length} ignorado(s) a mano</summary>
-      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Material</th><th>Pedido</th><th>Motivo</th><th></th></tr></thead><tbody>` +
-      ignorados.slice(0, 200).map(r => `<tr><td>${r.material_codigo} — ${escaparHTML(r.material_nombre || '')}</td><td>${r.pedido_numero}</td><td>${escaparHTML(r.motivo || '')}</td>
-        <td><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="indRestaurar(${r.requerimiento_id})">Restaurar</button></td></tr>`).join('') + '</tbody></table></details>';
+    const porMat = {};
+    ignorados.forEach(r => { const k = r.material_rubro + '|' + r.material_codigo; (porMat[k] = porMat[k] || { r, ids: [] }).ids.push(r.requerimiento_id); });
+    html += `<details style="margin-top:14px;"><summary style="cursor:pointer; color:var(--gris-claro);">${Object.keys(porMat).length} material(es) ignorado(s) a mano</summary>
+      <table class="pedidos" style="margin-top:6px;"><thead><tr><th>Material</th><th>Pedidos</th><th>Motivo</th><th></th></tr></thead><tbody>` +
+      Object.values(porMat).slice(0, 200).map(({ r, ids }) => `<tr><td>${r.material_codigo} — ${escaparHTML(r.material_nombre || '')}</td><td>${ids.length}</td><td>${escaparHTML(r.motivo || '')}</td>
+        <td><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="indRestaurar([${ids.join(',')}])">Restaurar</button></td></tr>`).join('') + '</tbody></table></details>';
   }
   cont.innerHTML = html;
 }
@@ -2062,12 +2089,6 @@ async function indCambiar(ids, cambios, errorTxt) {
   }
   return true;
 }
-async function indIgnorar(id) {
-  const f = indDatos.seg.find(r => r.requerimiento_id === id);
-  const r = await indDialogo({ titulo: 'Ignorar este faltante', texto: f ? `<strong>${f.material_codigo}</strong> — ${escaparHTML(f.material_nombre || '')} (pedido ${f.pedido_numero}). Dejará de contar en los indicadores.` : '', campos: [{ id: 'motivo', label: 'Motivo (opcional)' }], boton: 'Ignorar' });
-  if (!r) return;
-  if (await indCambiar([id], { estado: 'ignorado', motivo: r.motivo || 'Ignorado a mano' }, 'No se pudo ignorar')) await cargarIndicadores();
-}
 async function indIgnorarMaterial(codigo, rubro) {
   const filas = indDatos.seg.filter(r => r.estado === 'abierto' && r.material_codigo === codigo && r.material_rubro === rubro);
   if (!filas.length) return;
@@ -2080,16 +2101,23 @@ async function indIgnorarMaterial(codigo, rubro) {
   if (!r) return;
   if (await indCambiar(filas.map(x => x.requerimiento_id), { estado: 'ignorado', motivo: r.motivo || 'Material ignorado a mano' }, 'No se pudo ignorar')) await cargarIndicadores();
 }
-async function indResolver(id) {
-  const f = indDatos.seg.find(r => r.requerimiento_id === id);
-  const r = await indDialogo({ titulo: 'Marcar como resuelto', texto: f ? `<strong>${f.material_codigo}</strong> — ${escaparHTML(f.material_nombre || '')} (pedido ${f.pedido_numero}).` : '', campos: [{ id: 'fecha', label: '¿Qué día se cubrió?', tipo: 'date', valor: fechaLocalISO(new Date()) }], boton: 'Marcar resuelto' });
+async function indResolverMaterial(codigo, rubro) {
+  const filas = indDatos.seg.filter(r => r.estado === 'abierto' && r.material_codigo === codigo && r.material_rubro === rubro);
+  if (!filas.length) return;
+  const minimo = filas.map(r => r.fecha_inicio).sort().pop();
+  const r = await indDialogo({
+    titulo: 'Marcar material como resuelto',
+    texto: `<strong>${codigo}</strong> — ${escaparHTML(filas[0].material_nombre || '')}. Se cerrarán <strong>${filas.length}</strong> pedido(s) afectado(s) con la misma fecha.`,
+    campos: [{ id: 'fecha', label: '¿Qué día se cubrió?', tipo: 'date', valor: fechaLocalISO(new Date()) }], boton: 'Marcar resuelto',
+  });
   if (!r) return;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(r.fecha)) { alert('Fecha no válida.'); return; }
-  if (f && r.fecha < f.fecha_inicio) { alert('La fecha no puede ser anterior al ingreso del faltante (' + f.fecha_inicio + ').'); return; }
-  if (await indCambiar([id], { estado: 'cubierto', fecha_fin: r.fecha, motivo: 'Resuelto a mano' }, 'No se pudo cerrar')) await cargarIndicadores();
+  if (r.fecha < minimo) { alert('La fecha no puede ser anterior al ingreso del faltante más reciente de este material (' + minimo + ').'); return; }
+  if (await indCambiar(filas.map(x => x.requerimiento_id), { estado: 'cubierto', fecha_fin: r.fecha, motivo: 'Resuelto a mano' }, 'No se pudo cerrar')) await cargarIndicadores();
 }
-async function indRestaurar(id) {
-  if (await indCambiar([id], { estado: 'abierto', fecha_fin: null, motivo: null }, 'No se pudo restaurar')) await cargarIndicadores();
+async function indRestaurar(ids) {
+  ids = Array.isArray(ids) ? ids : [ids];
+  if (await indCambiar(ids, { estado: 'abierto', fecha_fin: null, motivo: null }, 'No se pudo restaurar')) await cargarIndicadores();
 }
 
 async function importarHistorialFaltantes() {
