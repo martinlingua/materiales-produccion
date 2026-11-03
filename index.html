@@ -182,10 +182,10 @@
     border-top: 4px solid var(--amarillo);
     border-radius: 6px;
     padding: 32px 36px;
-    width: 360px;
+    width: 320px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.06);
   }
-  .caja-login h1 { font-size: 17px; margin: 0 0 20px; white-space: nowrap; }
+  .caja-login h1 { font-size: 17px; margin: 0 0 20px; }
   .caja-login label { display: block; font-size: 12px; color: var(--gris-claro); margin-bottom: 4px; margin-top: 12px; }
   .caja-login input {
     width: 100%;
@@ -245,10 +245,10 @@
         <input type="text" id="filtro-herraje" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('herraje')">
         <select id="estado-herraje" onchange="renderizarPedidos('herraje')">
           <option value="todos">Todos los estados</option>
-          <option value="semana" selected>En producción + despachados esta semana</option>
+          <option value="semana" selected>Pendientes + entregados esta semana</option>
           <option value="en_produccion">Solo en producción</option>
-          <option value="entregado">Entregados</option>
-          <option value="cerrado_manual">Despachados / cerrados</option>
+          <option value="entregado">Material completo (sin faltantes)</option>
+          <option value="cerrado_manual">Entregados / cerrados</option>
         </select>
         <select id="proveedor-herraje" onchange="renderizarPedidos('herraje')" title="Ver solo lo de un proveedor">
           <option value="">Todos los proveedores</option>
@@ -275,6 +275,14 @@
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('herraje')">
           Pedidos de la semana
         </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="entregarSeleccion('herraje')"
+                title="Marca como entregados los pedidos tildados (herrajes e insumos a la vez), con la fecha real de entrega">
+          Marcar entregados
+        </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="reabrirSeleccion('herraje')"
+                title="Vuelve a abrir los pedidos entregados/cerrados que tildaste (en el filtro Entregados / cerrados)">
+          Reabrir seleccionados
+        </button>
         <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="imprimirFaltantes('herraje')"
                 title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
           Imprimir / PDF
@@ -293,10 +301,10 @@
         <input type="text" id="filtro-insumo" placeholder="Buscar pedido, cliente o material..." oninput="renderizarPedidos('insumo')">
         <select id="estado-insumo" onchange="renderizarPedidos('insumo')">
           <option value="todos">Todos los estados</option>
-          <option value="semana" selected>En producción + despachados esta semana</option>
+          <option value="semana" selected>Pendientes + entregados esta semana</option>
           <option value="en_produccion">Solo en producción</option>
-          <option value="entregado">Entregados</option>
-          <option value="cerrado_manual">Despachados / cerrados</option>
+          <option value="entregado">Material completo (sin faltantes)</option>
+          <option value="cerrado_manual">Entregados / cerrados</option>
         </select>
         <select id="proveedor-insumo" onchange="renderizarPedidos('insumo')" title="Ver solo lo de un proveedor">
           <option value="">Todos los proveedores</option>
@@ -322,6 +330,14 @@
         <input type="date" id="filtro-fecha-hasta-insumo" onchange="renderizarPedidos('insumo')" title="Hasta">
         <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="pedidosDeLaSemana('insumo')">
           Pedidos de la semana
+        </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="entregarSeleccion('insumo')"
+                title="Marca como entregados los pedidos tildados (herrajes e insumos a la vez), con la fecha real de entrega">
+          Marcar entregados
+        </button>
+        <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="reabrirSeleccion('insumo')"
+                title="Vuelve a abrir los pedidos entregados/cerrados que tildaste (en el filtro Entregados / cerrados)">
+          Reabrir seleccionados
         </button>
         <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="imprimirFaltantes('insumo')"
                 title="Imprime (o guarda como PDF) la lista de lo que falta, con los filtros que tenés puestos">
@@ -527,8 +543,15 @@
             <input type="text" id="cam-filtro-texto" placeholder="Código o nombre..." oninput="renderizarCamino()">
           </label>
         </div>
+        <div class="fila-form" style="padding:8px 10px; background:#f7f5ef; border-radius:6px;">
+          <label>Recibir una orden de compra completa
+            <select id="cam-oc-sel" style="min-width:320px;"></select>
+          </label>
+          <button class="primario" onclick="camRecibirOC()" title="Abre la lista de todas las líneas de esa orden para confirmarlas juntas">Recibir orden completa…</button>
+          <button class="primario" id="cam-btn-sel" style="background:var(--gris-claro);" onclick="camRecibirSeleccion()" title="Recibe juntas las líneas que tildaste en la primera columna">Recibir seleccionadas (0)</button>
+        </div>
         <table class="pedidos"><thead>
-          <tr><th>Llegó</th><th>Código</th><th>Material</th><th>Cantidad</th><th>Llega aprox.</th><th>Cargado</th><th>Proveedor / OC / aclaración</th><th></th></tr>
+          <tr><th><input type="checkbox" title="Tildar / destildar todas las que se ven" onclick="camSeleccionarTodas(this.checked)"></th><th>Llegó</th><th>Código</th><th>Material</th><th>Cantidad</th><th>Llega aprox.</th><th>Cargado</th><th>Proveedor / OC / aclaración</th><th></th></tr>
         </thead><tbody id="tbody-camino"></tbody></table>
       </div>
 
@@ -919,55 +942,29 @@ async function cargarUltimaImportacion() {
     return `${nombre}: <strong>${texto}</strong>${habiles > 0 ? ` (hace ${habiles} día${habiles > 1 ? 's' : ''} hábil${habiles > 1 ? 'es' : ''})` : ''}`;
   });
 
-  const avisoCierres = pedidosCerradosAuto.size > 0
-    ? `<div class="aviso info" style="margin-top:6px;">Se cerraron automáticamente ${pedidosCerradosAuto.size} pedido(s) con fecha de salida vencida. Los ves en el filtro "Despachados / cerrados".</div>`
-    : '';
   cont.style.display = 'block';
   cont.innerHTML = (hayAtraso
     ? `<div class="aviso" style="background:#fff4d6; color:#7a5a00; margin-top:0;">⚠ Falta importar pedidos nuevos. Última importación — ${partes.join(' · ')}</div>`
-    : `<div class="aviso info" style="margin-top:0;">Última importación — ${partes.join(' · ')}</div>`) + avisoCierres;
+    : `<div class="aviso info" style="margin-top:0;">Última importación — ${partes.join(' · ')}</div>`);
 }
 
-// Un pedido cuya fecha de salida ya pasó (anterior a hoy) ya salió de
-// fábrica: se cierra solo, exactamente igual que "Marcar como entregado" a
-// mano, en herrajes e insumos a la vez y SIN mirar si quedó algún material
-// sin cubrir. Sale de la lista de pendientes y de la cola de reparto de
-// stock; se ve en el filtro "Despachados / cerrados" y se puede reabrir
-// desde ahí. Solo lo intentan comprador/deposito (lectura no tiene permiso
-// de escritura).
-let pedidosCerradosAuto = new Set();
+// Un pedido se considera ENTREGADO solo cuando se lo marca a mano (con la
+// fecha real de salida): la fecha de salida del sistema original es la
+// planificada y a veces se atrasa unos días. Mientras no se lo marque, sigue
+// en la lista, sigue repartiendo stock y, si su fecha ya pasó, aparece como
+// "Atrasado". Al marcarlo se cierran sus requerimientos (herrajes e insumos a
+// la vez) y se guarda pedidos.entregado_en. Reabrirlo lo devuelve a la lista.
+let entregadoPorPedido = {};      // { nº de pedido: 'AAAA-MM-DD' } (pedidos.entregado_en)
+let columnaEntregaOk = true;      // false si todavía no se corrió sql_entregas.sql
 
-async function cerrarPorFechaSalidaVencida(filasPendientes) {
-  if (!puedeEscribir()) return false;
-  const aCerrarPorRubro = {};
-  filasPendientes.forEach(f => {
-    if (esDespachado(f.fecha_salida)) {
-      if (!aCerrarPorRubro[f.material_rubro]) aCerrarPorRubro[f.material_rubro] = new Set();
-      aCerrarPorRubro[f.material_rubro].add(f.pedido_numero);
-    }
-  });
+function fechaPasada(fecha) {
+  return !!fecha && fecha < fechaLocalISO(new Date());
+}
 
-  let huboCambios = false;
-  for (const rubro of Object.keys(aCerrarPorRubro)) {
-    const numeros = Array.from(aCerrarPorRubro[rubro]);
-    // de a tandas para no pasarse del largo máximo de la URL
-    for (let i = 0; i < numeros.length; i += 150) {
-      const tanda = numeros.slice(i, i + 150);
-      const { error } = await sb
-        .from('requerimientos')
-        .update({ activo: false })
-        .in('pedido_numero', tanda)
-        .eq('material_rubro', rubro)
-        .eq('activo', true);
-      if (error) {
-        console.error('No se pudo cerrar automáticamente por fecha de salida:', error);
-      } else {
-        huboCambios = true;
-        tanda.forEach(n => pedidosCerradosAuto.add(n));
-      }
-    }
-  }
-  return huboCambios;
+// Fecha en que salió un pedido CERRADO: la marcada a mano; en los que se
+// cerraron antes de este cambio (sin marca), su fecha de salida si ya pasó.
+function fechaSalidaReal(numero, fechaSalida) {
+  return entregadoPorPedido[numero] || (fechaPasada(fechaSalida) ? fechaSalida : null);
 }
 
 async function cargarTodo() {
@@ -979,11 +976,6 @@ async function cargarTodo() {
   }
 
   sincronizarSeguimiento(pend);  // sin esperar: registra/cierra faltantes para los indicadores
-  const huboCierres = await cerrarPorFechaSalidaVencida(pend);
-  if (huboCierres) {
-    await cargarTodo();
-    return;
-  }
 
   await cargarEnCaminoDatos();
   datosPendientes.herraje = pend.filter(p => p.material_rubro === 'herraje');
@@ -999,9 +991,15 @@ async function cargarTodo() {
     .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
     .eq('activo', false)
     .order('id'));
-  const { data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida').order('numero'));
+  let { data: pedidosInfo, error: errPedInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida, entregado_en').order('numero'));
+  columnaEntregaOk = !errPedInfo;
+  if (errPedInfo) {
+    // Todavía no existe la columna entregado_en: se sigue con lo de siempre.
+    ({ data: pedidosInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida').order('numero')));
+  }
   const infoPorPedido = {};
-  (pedidosInfo || []).forEach(p => infoPorPedido[p.numero] = p);
+  entregadoPorPedido = {};
+  (pedidosInfo || []).forEach(p => { infoPorPedido[p.numero] = p; if (p.entregado_en) entregadoPorPedido[p.numero] = p.entregado_en; });
   const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor').order('codigo'));
   const nombrePorMaterial = {};
   (matsInfo || []).forEach(m => nombrePorMaterial[m.codigo + '|' + m.rubro] = m);
@@ -1085,7 +1083,7 @@ async function cargarEnCaminoDatos() {
 
 // Reparte lo que hay en camino entre las filas con pendiente de cada
 // material (mismo orden que el stock: priorizados, fecha pactada, pedido).
-// No se reparte a pedidos ya despachados. Deja _camino y _comprar en cada fila.
+// Se reparte a los pedidos que siguen abiertos. Deja _camino y _comprar en cada fila.
 function asignarEnCamino() {
   ['herraje', 'insumo'].forEach(rubro => {
     const filas = datosPendientes[rubro];
@@ -1097,7 +1095,7 @@ function asignarEnCamino() {
       .forEach(r => { (lotes[r.material_codigo] = lotes[r.material_codigo] || []).push({ resto: Number(r.cantidad), fecha: r.fecha_estimada || null }); });
     if (Object.keys(lotes).length === 0) return;
     filas
-      .filter(f => Number(f.pendiente) > 0 && !esDespachado(f.fecha_salida) && lotes[f.material_codigo])
+      .filter(f => Number(f.pendiente) > 0 && lotes[f.material_codigo])
       .sort((a, b) => (b.prioridad_manual ? 1 : 0) - (a.prioridad_manual ? 1 : 0)
         || (a.fecha_pactada || '9999').localeCompare(b.fecha_pactada || '9999')
         || (a.pedido_numero - b.pedido_numero))
@@ -1251,12 +1249,13 @@ function renderizarCamino() {
     .sort((a, b) => (a.fecha_estimada || '9999').localeCompare(b.fecha_estimada || '9999') || (a.id - b.id));
 
   tbody.innerHTML = filas.length === 0
-    ? '<tr><td colspan="8" style="color:var(--gris-claro);">No hay mercadería en camino.</td></tr>'
+    ? '<tr><td colspan="9" style="color:var(--gris-claro);">No hay mercadería en camino.</td></tr>'
     : filas.map(r => {
         const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
         const atrasada = r.fecha_estimada && r.fecha_estimada < hoy;
         const cargado = new Date(r.creado_en).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
         return `<tr>
+          <td><input type="checkbox" class="cam-sel" value="${r.id}" onchange="camActualizarSel()" title="Tildala para recibir varias juntas"></td>
           <td><input type="checkbox" onchange="camMarcarLlego(${r.id}, this)" title="Tildalo cuando la mercadería llegó"></td>
           <td>${r.material_codigo}</td>
           <td>${escaparHTML(mat.nombre || '(material no encontrado)')}
@@ -1264,11 +1263,13 @@ function renderizarCamino() {
           <td>${camTextoCantidad(r)}</td>
           <td style="white-space:nowrap;"><input type="date" value="${r.fecha_estimada || ''}" onchange="camCambiarFecha(${r.id}, this.value)" title="Fecha de llegada prometida">${atrasada ? ' <span style="color:var(--rojo); font-weight:700;">atrasada</span>' : ''}</td>
           <td>${cargado}</td>
-          <td>${escaparHTML(r.nota || '')}${r.nota ? '' : '<span style="color:var(--gris-claro);">—</span>'}</td>
+          <td>${r.oc_numero ? `<span class="tag-camino">OC ${escaparHTML(r.oc_numero)}</span> ` : ''}${escaparHTML(r.nota || '')}${r.nota || r.oc_numero ? '' : '<span style="color:var(--gris-claro);">—</span>'}</td>
           <td style="white-space:nowrap;"><button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camEditarNota(${r.id})" title="Cambiar el proveedor, la orden de compra o la aclaración">Editar nota</button>
             <button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);" onclick="camEliminar(${r.id})" title="Se cargó por error: la borra sin contarla como llegada">Eliminar</button></td>
         </tr>`;
       }).join('');
+  camPoblarOC();
+  camActualizarSel();
   cargarRecibidosCamino();
 }
 
@@ -1337,18 +1338,7 @@ async function camMarcarLlego(id, chk) {
 
   // 2) Se saca de "en camino": completa = se marca recibida; parcial = se
   //    registra lo recibido aparte y queda el saldo en camino.
-  let errCamino = null;
-  if (completa) {
-    ({ error: errCamino } = await sb.from('en_camino').update({ recibido: true, recibido_en: ahora }).eq('id', id));
-  } else {
-    const { error: e1 } = await sb.from('en_camino').update({ cantidad_cargada: cargada - dec.cant, cantidad: (cargada - dec.cant) * factor }).eq('id', id);
-    errCamino = e1;
-    if (!e1) {
-      const { id: _omitido, creado_en: _c, _aviso, ...resto } = r;
-      const { error: e2 } = await sb.from('en_camino').insert({ ...resto, cantidad_cargada: dec.cant, cantidad: dec.cant * factor, recibido: true, recibido_en: ahora });
-      errCamino = e2;
-    }
-  }
+  const errCamino = await camCerrarLote(r, dec.cant, ahora);
   if (errCamino) {
     alert((dec.accion === 'recepcion'
       ? 'OJO: la recepción SÍ quedó registrada en el stock, pero no se pudo actualizar "en camino". Reintentá eligiendo la opción "el stock ya lo incluye" para no sumarla dos veces. '
@@ -1357,6 +1347,164 @@ async function camMarcarLlego(id, chk) {
     return;
   }
   await cargarTodo();
+}
+
+// Saca de "en camino" lo que llegó de un lote: completo = se marca recibido;
+// parcial = lo recibido queda registrado aparte y el saldo sigue en camino.
+// Devuelve el error (o null).
+async function camCerrarLote(r, cant, ahora) {
+  const factor = Number(r.factor_aplicado) || 1;
+  const cargada = Number(r.cantidad_cargada != null ? r.cantidad_cargada : r.cantidad / factor);
+  if (cant >= cargada - 0.005) {
+    const { error } = await sb.from('en_camino').update({ recibido: true, recibido_en: ahora }).eq('id', r.id);
+    return error || null;
+  }
+  const { error: e1 } = await sb.from('en_camino').update({ cantidad_cargada: cargada - cant, cantidad: (cargada - cant) * factor }).eq('id', r.id);
+  if (e1) return e1;
+  const { id: _omitido, creado_en: _c, _aviso, ...resto } = r;
+  const { error: e2 } = await sb.from('en_camino').insert({ ...resto, cantidad_cargada: cant, cantidad: cant * factor, recibido: true, recibido_en: ahora });
+  return e2 || null;
+}
+
+// ---------------------------------------------------------------------
+// RECIBIR VARIAS JUNTAS (una orden de compra completa o las tildadas)
+// ---------------------------------------------------------------------
+function camPoblarOC() {
+  const sel = document.getElementById('cam-oc-sel');
+  if (!sel) return;
+  const previo = sel.value;
+  const ocs = {};
+  enCaminoAbiertos.forEach(r => {
+    if (!r.oc_numero) return;
+    const o = ocs[r.oc_numero] || (ocs[r.oc_numero] = { n: 0, prov: r.oc_proveedor || '' });
+    o.n++;
+  });
+  const claves = Object.keys(ocs).sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+  sel.innerHTML = `<option value="">${claves.length ? '— elegí una orden —' : '(no hay órdenes cargadas desde PDF)'}</option>`
+    + claves.map(k => `<option value="${escaparHTML(k)}">OC ${escaparHTML(k)}${ocs[k].prov ? ' — ' + escaparHTML(ocs[k].prov) : ''} (${ocs[k].n} línea${ocs[k].n > 1 ? 's' : ''})</option>`).join('');
+  if (claves.includes(previo)) sel.value = previo;
+}
+
+function camTildadas() {
+  return Array.from(document.querySelectorAll('.cam-sel:checked')).map(c => parseInt(c.value));
+}
+function camActualizarSel() {
+  const b = document.getElementById('cam-btn-sel');
+  if (b) b.textContent = `Recibir seleccionadas (${camTildadas().length})`;
+}
+function camSeleccionarTodas(marcar) {
+  document.querySelectorAll('.cam-sel').forEach(c => { c.checked = marcar; });
+  camActualizarSel();
+}
+
+async function camRecibirOC() {
+  const oc = document.getElementById('cam-oc-sel').value;
+  if (!oc) { alert('Elegí primero una orden de compra de la lista.'); return; }
+  const lotes = enCaminoAbiertos.filter(r => r.oc_numero === oc).sort((a, b) => a.id - b.id);
+  const prov = (lotes[0] && lotes[0].oc_proveedor) || '';
+  await camRecibirVarias(lotes, `Orden de compra ${oc}${prov ? ' — ' + prov : ''}`);
+}
+
+async function camRecibirSeleccion() {
+  const ids = camTildadas();
+  if (!ids.length) { alert('Tildá primero las líneas que llegaron (primera columna de la tabla).'); return; }
+  const lotes = enCaminoAbiertos.filter(r => ids.includes(r.id)).sort((a, b) => a.id - b.id);
+  await camRecibirVarias(lotes, 'Líneas seleccionadas');
+}
+
+async function camRecibirVarias(lotes, titulo) {
+  if (!lotes.length) return;
+  const dec = await camDialogoRecepcion(lotes, titulo);
+  if (!dec) return;
+  const ahora = new Date().toISOString();
+  if (dec.accion === 'recepcion') {
+    const filas = dec.items.map(({ r, cant }) => {
+      const factor = Number(r.factor_aplicado) || 1;
+      return {
+        material_codigo: r.material_codigo, material_rubro: r.material_rubro,
+        cantidad: cant * factor, cantidad_contada: cant, factor_aplicado: factor,
+        pedido_numero: null, usuario_id: perfilActual.id,
+        observaciones: 'Desde "en camino"' + (r.oc_numero ? ' — OC ' + r.oc_numero : (r.nota ? ' — ' + r.nota : '')),
+      };
+    });
+    const { error } = await sb.from('recepciones').insert(filas);
+    if (error) { alert('No se pudo registrar la recepción, no se cambió nada: ' + error.message); return; }
+  }
+  const fallas = [];
+  for (const { r, cant } of dec.items) {
+    const err = await camCerrarLote(r, cant, ahora);
+    if (err) fallas.push(`${r.material_codigo}: ${err.message}`);
+  }
+  if (fallas.length) {
+    alert((dec.accion === 'recepcion'
+      ? 'OJO: las recepciones SÍ quedaron sumadas al stock, pero estas líneas no se pudieron sacar de "en camino". Para no sumarlas dos veces, volvé a recibirlas eligiendo "el stock ya lo incluye":\n'
+      : 'Estas líneas no se pudieron actualizar:\n') + fallas.join('\n'));
+  }
+  await cargarTodo();
+}
+
+// Lista editable: cada línea se puede destildar (no llegó) o cambiar la
+// cantidad (llegó menos). Lo que no llegó o llegó de menos sigue en camino.
+function camDialogoRecepcion(lotes, titulo) {
+  return new Promise(resolve => {
+    const info = lotes.map(r => {
+      const mat = materialesCache.find(m => m.codigo === r.material_codigo && m.rubro === r.material_rubro) || {};
+      const factor = Number(r.factor_aplicado) || 1;
+      const cargada = Number(r.cantidad_cargada != null ? r.cantidad_cargada : r.cantidad / factor);
+      const unidad = factor !== 1 ? (mat.unidad_conteo || '') : (mat.umed || '');
+      return { r, mat, cargada, unidad };
+    });
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:4vh 0;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:8px;padding:20px;max-width:820px;width:94%;font-size:14px;border-top:4px solid #FFCC03;">
+      <h3 style="margin:0 0 4px;">Recibir mercadería</h3>
+      <div style="color:var(--gris-claro); font-size:13px; margin-bottom:10px;">${escaparHTML(titulo)}. Dejá tildado lo que llegó; destildá lo que <strong>no llegó</strong> y cambiá la cantidad de lo que llegó <strong>incompleto</strong>: el resto sigue en camino.</div>
+      <table class="pedidos" style="font-size:13px;"><thead><tr><th>Llegó</th><th>Material</th><th>En camino</th><th>Cantidad que llegó</th></tr></thead><tbody>
+      ${info.map((x, i) => `<tr>
+        <td><input type="checkbox" id="cam-b-chk-${i}" checked></td>
+        <td><strong>${x.r.material_codigo}</strong> — ${escaparHTML(x.mat.nombre || '(material no encontrado)')}${x.r.nota ? `<div style="font-size:11px; color:var(--gris-claro);">${escaparHTML(x.r.nota)}</div>` : ''}</td>
+        <td>${camTextoCantidad(x.r)}</td>
+        <td style="white-space:nowrap;"><input type="number" id="cam-b-cant-${i}" min="0" step="0.01" value="${redondear2(x.cargada)}" style="width:100px;"> ${escaparHTML(x.unidad)}</td>
+      </tr>`).join('')}
+      </tbody></table>
+      <div id="cam-b-resumen" style="font-size:12px; color:var(--gris-claro); margin:8px 0;"></div>
+      <div style="margin:8px 0;">
+        <label style="display:flex; align-items:flex-start; gap:8px; margin-bottom:4px; flex-direction:row;"><input type="radio" name="cam-b-modo" value="recepcion" checked style="margin-top:3px;"> <span><strong>Sumarlo al stock</strong> (registrar recepción)</span></label>
+        <label style="display:flex; align-items:flex-start; gap:8px; flex-direction:row;"><input type="radio" name="cam-b-modo" value="solo" style="margin-top:3px;"> <span><strong>El stock ya lo incluye</strong> (solo sacarlo de "en camino", sin tocar el stock)</span></label>
+      </div>
+      <div id="cam-b-err" style="color:var(--rojo); font-size:12px; min-height:16px;"></div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+        <button class="primario" id="cam-b-no" style="background:#fff; color:var(--gris-oscuro); border:1px solid var(--gris-claro);">Cancelar</button>
+        <button class="primario" id="cam-b-si">Confirmar recepción</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const cerrar = v => { ov.remove(); resolve(v); };
+    const leerFilas = () => info.map((x, i) => ({
+      x, llego: document.getElementById('cam-b-chk-' + i).checked,
+      cant: parseFloat(document.getElementById('cam-b-cant-' + i).value),
+    }));
+    const resumen = () => {
+      const f = leerFilas();
+      let comp = 0, parc = 0, no = 0;
+      f.forEach(({ x, llego, cant }) => { if (!llego || !(cant > 0)) no++; else if (cant >= x.cargada - 0.005) comp++; else parc++; });
+      document.getElementById('cam-b-resumen').textContent = `${comp} completa(s) · ${parc} parcial(es) · ${no} sin llegar (siguen en camino)`;
+      info.forEach((x, i) => { document.getElementById('cam-b-cant-' + i).disabled = !document.getElementById('cam-b-chk-' + i).checked; });
+    };
+    info.forEach((x, i) => {
+      document.getElementById('cam-b-chk-' + i).onchange = resumen;
+      document.getElementById('cam-b-cant-' + i).oninput = resumen;
+    });
+    resumen();
+    document.getElementById('cam-b-no').onclick = () => cerrar(null);
+    document.getElementById('cam-b-si').onclick = () => {
+      const f = leerFilas().filter(y => y.llego);
+      if (!f.length) { document.getElementById('cam-b-err').textContent = 'No marcaste ninguna línea como llegada.'; return; }
+      const mala = f.find(y => !(y.cant > 0) || y.cant > y.x.cargada + 0.005);
+      if (mala) { document.getElementById('cam-b-err').textContent = `Revisá la cantidad de ${mala.x.r.material_codigo}: tiene que ser mayor a 0 y no mayor a ${redondear2(mala.x.cargada)}.`; return; }
+      const accion = document.querySelector('input[name="cam-b-modo"]:checked').value;
+      cerrar({ accion, items: f.map(y => ({ r: y.x.r, cant: y.cant })) });
+    };
+  });
 }
 
 async function camCambiarFecha(id, valor) {
@@ -1698,7 +1846,7 @@ function alDiasHasta(iso) {
   return Math.round((new Date(iso + 'T00:00:00') - hoy) / 86400000);
 }
 function alTextoDias(d) {
-  return d === 0 ? 'HOY' : d === 1 ? 'mañana' : `en ${d}d`;
+  return d < 0 ? `VENCIDA hace ${-d}d` : d === 0 ? 'HOY' : d === 1 ? 'mañana' : `en ${d}d`;
 }
 
 let alertasCache = { items: [], sinFecha: [] };
@@ -1715,7 +1863,6 @@ function calcularAlertas(umbral) {
       sinFecha[f.pedido_numero].materiales.add(f.material_codigo);
       return;
     }
-    if (esDespachado(f.fecha_salida)) return;
     const d = alDiasHasta(f.fecha_salida);
     const motivos = [];
     let sev = 0;
@@ -1837,7 +1984,7 @@ async function sincronizarSeguimiento(pend) {
       const hayPendiente = Number(f.pendiente) > 0.005;
       const est = mapa.get(f.requerimiento_id);
       if (est === undefined) {
-        if (hayPendiente && !esDespachado(f.fecha_salida)) nuevos.push(f);
+        if (hayPendiente) nuevos.push(f);
       } else if (est === 'abierto' && !hayPendiente) {
         aCerrar.push(f.requerimiento_id);
       } else if (est === 'descartado' && hayPendiente) {
@@ -2176,12 +2323,6 @@ function redondear2(n) {
 // select "filtro-campo-fecha-<rubro>". Si el pedido no tiene cargada esa
 // fecha y hay un rango puesto, lo deja afuera (para no mezclar "sin dato"
 // con "dentro del rango").
-// Despachado = fecha de salida estrictamente anterior a hoy (si sale hoy,
-// todavía no se considera despachado).
-function esDespachado(fechaSalida) {
-  return !!fechaSalida && fechaSalida < fechaLocalISO(new Date());
-}
-
 // Lunes de la semana actual (fecha local, AAAA-MM-DD).
 function inicioSemanaISO() {
   const d = new Date();
@@ -2204,15 +2345,12 @@ function fuenteDeVista(rubro, filtroEstado) {
   const lunes = inicioSemanaISO();
   let pend = datosPendientes[rubro];
   if (filtroEstado === 'semana') {
-    pend = pend.filter(f => {
-      const base = estadosPedidos[f.pedido_numero] || { estado: 'en_produccion' };
-      return estadoEfectivo(base.estado, f.fecha_salida) === 'en_produccion'
-        || (esDespachado(f.fecha_salida) && f.fecha_salida >= lunes);
-    });
+    // Todo lo que sigue abierto (aunque ya tenga el material completo, hasta
+    // que se lo marque como entregado); lo entregado se agrega abajo.
   }
   if (filtroEstado === 'en_produccion') return pend;
   const cerradosSemana = datosCerrados[rubro]
-    .filter(f => esDespachado(f.fecha_salida) && f.fecha_salida >= lunes)
+    .filter(f => { const e = fechaSalidaReal(f.pedido_numero, f.fecha_salida); return !!e && e >= lunes; })
     .map(f => ({ ...f, _cerrado: true }));
   return [...pend, ...cerradosSemana];
 }
@@ -2221,8 +2359,10 @@ function puedeEscribir() {
   return !!perfilActual && (perfilActual.rol === 'comprador' || perfilActual.rol === 'deposito');
 }
 
-function estadoEfectivo(estadoStock, fechaSalida) {
-  return esDespachado(fechaSalida) ? 'entregado' : estadoStock;
+// Estado según el stock: 'entregado' = el material de todo el pedido ya está
+// cubierto (NO significa que el pedido haya salido; eso se marca a mano).
+function estadoEfectivo(estadoStock) {
+  return estadoStock;
 }
 
 function pasaFiltroFecha(rubro, fechaIngreso, fechaPactada, fechaSalida) {
@@ -2337,7 +2477,7 @@ function renderizarPedidos(rubro) {
     thead.innerHTML = '<tr><th>Código</th><th>Material</th><th>Proveedor</th><th>Pendiente total</th><th>Stock actual</th><th>Pedidos afectados</th><th></th></tr>';
     renderizarPorMaterial(rubro);
   } else {
-    thead.innerHTML = '<tr><th></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>';
+    thead.innerHTML = `<tr><th><input type="checkbox" title="Tildar / destildar todos los que se ven" onclick="seleccionarTodosPedidos('${rubro}', this.checked)"></th><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>`;
     renderizarPorPedido(rubro);
   }
 }
@@ -2380,9 +2520,10 @@ function renderizarPorPedido(rubro) {
     const fecha = materiales[0].fecha_pactada || '';
     const fechaIngreso = materiales[0].fecha_ingreso || '';
     const fechaSalida = materiales[0].fecha_salida || '';
-    // Fecha de salida anterior a hoy = ya se despachó: figura siempre como
-    // entregado, sin importar si el stock llegó a cubrir todo.
-    const estado = { ...estadoBase, estado: estadoEfectivo(estadoBase.estado, fechaSalida) };
+    // Entregado solo si se lo marcó a mano; si la fecha de salida ya pasó y
+    // no se lo marcó, figura como "Atrasado".
+    const estado = { ...estadoBase, estado: estadoEfectivo(estadoBase.estado) };
+    const salidaReal = fechaSalidaReal(numero, fechaSalida);
     const pedidoCerrado = materiales.every(m => m._cerrado);
 
     const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
@@ -2424,7 +2565,7 @@ function renderizarPorPedido(rubro) {
     };
     trPedido.innerHTML = `
       <td onclick="event.stopPropagation()">
-        ${pedidoCerrado ? '' : `<input type="checkbox" class="chk-semana-${rubro}" value="${numero}" onclick="event.stopPropagation()">`}
+        ${puedeEscribir() || !pedidoCerrado ? `<input type="checkbox" class="chk-semana-${rubro}" value="${numero}" ${pedidoCerrado ? 'data-cerrado="1"' : ''} onclick="event.stopPropagation()">` : ''}
       </td>
       <td><strong>${numero}</strong></td>
       <td>${cliente}</td>
@@ -2432,10 +2573,11 @@ function renderizarPorPedido(rubro) {
       <td>${pedidoCerrado ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
         ${pedidoCerrado
-          ? (esDespachado(fechaSalida)
-              ? '<span class="chip entregado">Entregado</span>'
+          ? (salidaReal
+              ? `<span class="chip entregado">Entregado ${formatearFechaCorta(salidaReal)}</span>`
               : '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>')
-          : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Entregado' : 'En producción'}</span>
+          : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Material completo' : 'En producción'}</span>
+             ${fechaPasada(fechaSalida) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;" title="La fecha de salida ya pasó y el pedido no se marcó como entregado">Atrasado</span>' : ''}
              ${materiales.some(m => m.prioridad_manual) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
         }
       </td>
@@ -2606,8 +2748,8 @@ function renderizarPorMaterial(rubro) {
           <td class="${epP.cls} pend-num">${redondear2(p.pendiente)}${epP.extra}</td>
           <td>
             ${p.cerrado
-              ? (esDespachado(p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
-              : `${p.estado === 'entregado' ? 'Entregado' : 'En producción'}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
+              ? (fechaSalidaReal(numero, p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
+              : `${p.estado === 'entregado' ? 'Material completo' : 'En producción'}${fechaPasada(p.fecha_salida) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Atrasado</span>' : ''}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
             }
           </td>
           <td>
@@ -2665,37 +2807,109 @@ async function editarFecha(numero, rubro, fechaActual) {
 }
 
 // ---------------------------------------------------------------------
-// MARCAR / REABRIR ENTREGADO MANUAL
+// MARCAR / REABRIR ENTREGADO (en bloque o de a uno)
 // ---------------------------------------------------------------------
-async function marcarEntregadoManual(numero, rubro) {
-  if (!confirm(`¿Marcar el pedido ${numero} (${rubro}) como entregado? Va a salir de la lista de pendientes y de la cola de reparto de stock. Podés reabrirlo después desde "Cerrados manualmente".`)) return;
-  const { error } = await sb
-    .from('requerimientos')
-    .update({ activo: false })
-    .eq('pedido_numero', numero)
-    .eq('material_rubro', rubro)
-    .eq('activo', true);
-  if (error) {
-    alert('No se pudo cerrar el pedido: ' + error.message);
-    return;
+function seleccionarTodosPedidos(rubro, marcar) {
+  document.querySelectorAll('.chk-semana-' + rubro).forEach(c => { c.checked = marcar; });
+}
+
+function pedidosTildados(rubro, cerrados) {
+  return Array.from(document.querySelectorAll('.chk-semana-' + rubro + (cerrados ? '[data-cerrado]' : ':not([data-cerrado])') + ':checked'))
+    .map(c => parseInt(c.value));
+}
+
+function avisoFaltaColumnaEntrega() {
+  alert('Falta un paso en Supabase: corré el archivo sql_entregas.sql en el SQL Editor y recargá la página.');
+}
+
+// Marca pedidos como entregados en bloque: cierra sus requerimientos
+// (herrajes e insumos a la vez) y guarda la fecha real de entrega.
+async function marcarEntregados(numeros, fecha) {
+  for (let i = 0; i < numeros.length; i += 150) {
+    const tanda = numeros.slice(i, i + 150);
+    const { error: e1 } = await sb.from('requerimientos').update({ activo: false }).in('pedido_numero', tanda).eq('activo', true);
+    if (e1) { alert('No se pudieron cerrar los pedidos: ' + e1.message); await cargarTodo(); return false; }
+    const { error: e2 } = await sb.from('pedidos').update({ entregado_en: fecha }).in('numero', tanda);
+    if (e2) { alert('Se cerraron, pero no se pudo guardar la fecha de entrega: ' + e2.message); await cargarTodo(); return false; }
   }
   await cargarTodo();
+  return true;
+}
+
+async function reabrirPedidos(numeros) {
+  for (let i = 0; i < numeros.length; i += 150) {
+    const tanda = numeros.slice(i, i + 150);
+    const { error: e1 } = await sb.from('requerimientos').update({ activo: true })
+      .in('pedido_numero', tanda).eq('activo', false).is('reemplazado_por', null).eq('ignorado', false);
+    if (e1) { alert('No se pudieron reabrir los pedidos: ' + e1.message); await cargarTodo(); return false; }
+    if (columnaEntregaOk) {
+      const { error: e2 } = await sb.from('pedidos').update({ entregado_en: null }).in('numero', tanda);
+      if (e2) { alert('Se reabrieron, pero no se pudo borrar la fecha de entrega: ' + e2.message); await cargarTodo(); return false; }
+    }
+  }
+  await cargarTodo();
+  return true;
+}
+
+function textoResumenPedidos(numeros) {
+  const clientes = {};
+  numeros.forEach(n => {
+    const f = [...datosPendientes.herraje, ...datosPendientes.insumo, ...datosCerrados.herraje, ...datosCerrados.insumo].find(x => x.pedido_numero === n);
+    const c = (f && f.cliente) || '(sin cliente)';
+    clientes[c] = (clientes[c] || 0) + 1;
+  });
+  return Object.entries(clientes).map(([c, k]) => `${escaparHTML(c)}: ${k}`).join(' · ');
+}
+
+async function entregarSeleccion(rubro) {
+  if (!puedeEscribir()) { alert('Tu usuario no tiene permiso para modificar pedidos.'); return; }
+  if (!columnaEntregaOk) { avisoFaltaColumnaEntrega(); return; }
+  const nums = pedidosTildados(rubro, false);
+  if (!nums.length) { alert('Tildá al menos un pedido con la casilla (o usá la casilla del encabezado para tildar todos los que se ven).'); return; }
+  const conFalta = new Set();
+  ['herraje', 'insumo'].forEach(r => datosPendientes[r].forEach(f => { if (nums.includes(f.pedido_numero) && Number(f.pendiente) > 0.005) conFalta.add(f.pedido_numero); }));
+  const r = await indDialogo({
+    titulo: 'Marcar pedidos como entregados',
+    texto: `Vas a marcar <strong>${nums.length} pedido(s)</strong> como entregados, en herrajes e insumos a la vez.<br><span style="font-size:12px;">${textoResumenPedidos(nums)}</span>`
+      + (conFalta.size ? `<br><br><strong style="color:#b3261e;">${conFalta.size} de ellos todavía tienen faltantes de material</strong> (salen igual, sin material completo). Dejan de contar como faltante y de repartir stock.` : '')
+      + '<br><br>Los podés reabrir desde el filtro "Entregados / cerrados".',
+    campos: [{ id: 'fecha', label: 'Fecha real de entrega', tipo: 'date', valor: fechaLocalISO(new Date()) }],
+    boton: `Marcar ${nums.length} entregado(s)`,
+  });
+  if (!r) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.fecha)) { alert('Fecha no válida.'); return; }
+  await marcarEntregados(nums, r.fecha);
+}
+
+async function reabrirSeleccion(rubro) {
+  if (!puedeEscribir()) { alert('Tu usuario no tiene permiso para modificar pedidos.'); return; }
+  const nums = pedidosTildados(rubro, true);
+  if (!nums.length) { alert('Elegí el filtro "Entregados / cerrados" y tildá los pedidos que querés reabrir.'); return; }
+  const r = await indDialogo({
+    titulo: 'Reabrir pedidos',
+    texto: `Vas a reabrir <strong>${nums.length} pedido(s)</strong> (herrajes e insumos). Vuelven a la lista de pendientes y a repartir stock; se borra su fecha de entrega.<br><span style="font-size:12px;">${textoResumenPedidos(nums)}</span>`,
+    boton: `Reabrir ${nums.length}`,
+  });
+  if (!r) return;
+  await reabrirPedidos(nums);
+}
+
+// Botones de cada pedido (detalle): lo mismo, para uno solo.
+async function marcarEntregadoManual(numero, rubro) {
+  if (!columnaEntregaOk) { avisoFaltaColumnaEntrega(); return; }
+  const r = await indDialogo({
+    titulo: `Marcar el pedido ${numero} como entregado`,
+    texto: 'Se cierra en herrajes e insumos a la vez y sale de la lista de pendientes y del reparto de stock. Lo podés reabrir desde "Entregados / cerrados".',
+    campos: [{ id: 'fecha', label: 'Fecha real de entrega', tipo: 'date', valor: fechaLocalISO(new Date()) }],
+    boton: 'Marcar entregado',
+  });
+  if (!r) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(r.fecha)) { alert('Fecha no válida.'); return; }
+  await marcarEntregados([numero], r.fecha);
 }
 
 async function reabrirPedido(numero, rubro) {
-  const { error } = await sb
-    .from('requerimientos')
-    .update({ activo: true })
-    .eq('pedido_numero', numero)
-    .eq('material_rubro', rubro)
-    .eq('activo', false)
-    .is('reemplazado_por', null)
-    .eq('ignorado', false);
-  if (error) {
-    alert('No se pudo reabrir el pedido: ' + error.message);
-    return;
-  }
-  await cargarTodo();
+  await reabrirPedidos([numero]);
 }
 
 // ---------------------------------------------------------------------
@@ -3567,7 +3781,7 @@ function buscarParaAjuste() {
 // hace desaparecer un faltante real de la lista de pendientes.
 // ---------------------------------------------------------------------
 async function pedidosDeLaSemana(rubro) {
-  const seleccionados = Array.from(document.querySelectorAll('.chk-semana-' + rubro + ':checked'))
+  const seleccionados = Array.from(document.querySelectorAll('.chk-semana-' + rubro + ':not([data-cerrado]):checked'))
     .map(chk => parseInt(chk.value));
 
   if (seleccionados.length === 0) {
