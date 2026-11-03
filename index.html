@@ -7,9 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<!-- XLSX, JsBarcode y pdf.js se cargan recién cuando hacen falta (ver LIBRERIAS) -->
 <style>
   :root {
     --amarillo: #FFCC03;
@@ -794,6 +792,33 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Librerías pesadas que solo se usan en algunas acciones (importar planillas,
+// imprimir etiquetas, leer OCs en PDF). Cargarlas al abrir la página suma
+// ~2 MB y en las PCs con XP traba el inicio.
+const LIBRERIAS = {
+  XLSX: ['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'],
+  JsBarcode: ['https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js'],
+  pdfjsLib: ['https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'],
+};
+const PDF_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const librerias = {};
+function cargarLibreria(nombre) {
+  if (window[nombre]) return Promise.resolve(window[nombre]);
+  if (!librerias[nombre]) {
+    librerias[nombre] = LIBRERIAS[nombre].reduce((cadena, url) => cadena.then(() => new Promise((ok, mal) => {
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = ok;
+      s.onerror = () => mal(new Error('No se pudo descargar ' + nombre + ' (¿sin internet?). Probá de nuevo.'));
+      document.head.appendChild(s);
+    })), Promise.resolve()).then(() => {
+      if (!window[nombre]) throw new Error('La librería ' + nombre + ' no funciona en este navegador.');
+      return window[nombre];
+    }).catch(e => { delete librerias[nombre]; throw e; });
+  }
+  return librerias[nombre];
+}
+
 let perfilActual = null;   // { id, nombre, rol }
 let tabActiva = 'herraje';
 let materialesCache = [];  // para el buscador de recepciones
@@ -968,8 +993,25 @@ function fechaSalidaReal(numero, fechaSalida) {
 }
 
 async function cargarTodo() {
-  const { data: pend, error: e1 } = await obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*').order('requerimiento_id'));
-  const { data: estados, error: e2 } = await obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*').order('numero'));
+  // Todas las lecturas salen juntas en vez de una detrás de otra: son unas
+  // 60 páginas de 1000 filas y en serie la espera se suma.
+  const [rPend, rEstados, rCerrados, rPedidos, rMats] = await Promise.all([
+    obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*').order('requerimiento_id')),
+    obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*').order('numero')),
+    // Requerimientos cerrados a mano (activo = false) — no viven en
+    // v_pendientes porque esa vista solo trae requerimientos activos.
+    obtenerTodasLasFilas(() => sb
+      .from('requerimientos')
+      .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
+      .eq('activo', false)
+      .order('id')),
+    obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida, entregado_en').order('numero')),
+    // Una sola lectura del catálogo: sirve para los cerrados y para el buscador.
+    obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo')),
+    cargarEnCaminoDatos(),
+  ]);
+  const { data: pend, error: e1 } = rPend;
+  const { data: estados, error: e2 } = rEstados;
   if (e1 || e2) {
     console.error(e1, e2);
     return;
@@ -977,21 +1019,14 @@ async function cargarTodo() {
 
   sincronizarSeguimiento(pend);  // sin esperar: registra/cierra faltantes para los indicadores
 
-  await cargarEnCaminoDatos();
   datosPendientes.herraje = pend.filter(p => p.material_rubro === 'herraje');
   datosPendientes.insumo = pend.filter(p => p.material_rubro === 'insumo');
   asignarEnCamino();
   estadosPedidos = {};
   estados.forEach(e => estadosPedidos[e.numero] = e);
 
-  // Requerimientos cerrados a mano (activo = false) — no viven en
-  // v_pendientes porque esa vista solo trae requerimientos activos.
-  const { data: cerrados } = await obtenerTodasLasFilas(() => sb
-    .from('requerimientos')
-    .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
-    .eq('activo', false)
-    .order('id'));
-  let { data: pedidosInfo, error: errPedInfo } = await obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida, entregado_en').order('numero'));
+  const { data: cerrados } = rCerrados;
+  let { data: pedidosInfo, error: errPedInfo } = rPedidos;
   columnaEntregaOk = !errPedInfo;
   if (errPedInfo) {
     // Todavía no existe la columna entregado_en: se sigue con lo de siempre.
@@ -1000,7 +1035,7 @@ async function cargarTodo() {
   const infoPorPedido = {};
   entregadoPorPedido = {};
   (pedidosInfo || []).forEach(p => { infoPorPedido[p.numero] = p; if (p.entregado_en) entregadoPorPedido[p.numero] = p.entregado_en; });
-  const { data: matsInfo } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, proveedor').order('codigo'));
+  const { data: matsInfo } = rMats;
   const nombrePorMaterial = {};
   (matsInfo || []).forEach(m => nombrePorMaterial[m.codigo + '|' + m.rubro] = m);
 
@@ -1025,9 +1060,7 @@ async function cargarTodo() {
     });
   });
 
-  materialesCache = [];
-  const { data: mats } = await obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo'));
-  if (mats) materialesCache = mats;
+  materialesCache = matsInfo || [];
 
   poblarProveedores('herraje');
   poblarProveedores('insumo');
@@ -1651,8 +1684,8 @@ let ocEstado = null;       // { oc, filas: [...] }
 let ocEquivalencias = {};  // 'proveedor|texto' -> {material_codigo, material_rubro}
 
 async function ocLeerPDF(archivo) {
-  if (!window.pdfjsLib) throw new Error('No se cargó el lector de PDF (revisá la conexión a internet y recargá la página).');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  await cargarLibreria('pdfjsLib');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
   const doc = await pdfjsLib.getDocument({ data: new Uint8Array(await archivo.arrayBuffer()) }).promise;
   const paginas = [];
   for (let p = 1; p <= doc.numPages; p++) {
@@ -2499,13 +2532,15 @@ function renderizarPorPedido(rubro) {
     porPedido[fila.pedido_numero].push(fila);
   });
 
+  // Orden ascendente (más viejo primero) por la fecha elegida en el
+  // selector (por defecto F. salida); los que no tienen esa fecha van al
+  // final; el empate se resuelve por número de pedido.
+  const campoOrden = document.getElementById('filtro-campo-fecha-' + rubro).value;
+  const cmpMat = comparadorMateriales(rubro);
+  const frag = document.createDocumentFragment();
   const pedidosOrdenados = Object.keys(porPedido)
     .map(n => parseInt(n))
     .sort((a, b) => {
-      // Orden ascendente (más viejo primero) por la fecha elegida en el
-      // selector (por defecto F. salida); los que no tienen esa fecha van al
-      // final; el empate se resuelve por número de pedido.
-      const campoOrden = document.getElementById('filtro-campo-fecha-' + rubro).value;
       const fa = porPedido[a][0][campoOrden] || '';
       const fb = porPedido[b][0][campoOrden] || '';
       if (fa && !fb) return -1;
@@ -2559,9 +2594,12 @@ function renderizarPorPedido(rubro) {
 
     const trPedido = document.createElement('tr');
     trPedido.className = 'fila-pedido';
+    // El detalle se arma recién la primera vez que se abre el pedido: armar
+    // miles de filas ocultas de entrada traba las PCs viejas (XP).
+    let detalleArmado = false;
     trPedido.onclick = () => {
-      const det = document.getElementById('det-' + rubro + '-' + numero);
-      det.style.display = det.style.display === 'none' ? 'table-row' : 'none';
+      if (!detalleArmado) { trDetalle.innerHTML = armarDetalle(); detalleArmado = true; }
+      trDetalle.style.display = trDetalle.style.display === 'none' ? 'table-row' : 'none';
     };
     trPedido.innerHTML = `
       <td onclick="event.stopPropagation()">
@@ -2582,14 +2620,15 @@ function renderizarPorPedido(rubro) {
         }
       </td>
     `;
-    tbody.appendChild(trPedido);
+    frag.appendChild(trPedido);
 
     const trDetalle = document.createElement('tr');
     trDetalle.className = 'detalle';
     trDetalle.id = 'det-' + rubro + '-' + numero;
     trDetalle.style.display = 'none';
+    frag.appendChild(trDetalle);
 
-    const cmpMat = comparadorMateriales(rubro);
+    const armarDetalle = () => {
     const filasMat = Object.entries(porMaterial)
       .sort(([ca, a], [cb, b]) => cmpMat({ ...a, codigo: Number(ca) }, { ...b, codigo: Number(cb) }))
       .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
@@ -2633,15 +2672,16 @@ function renderizarPorPedido(rubro) {
           `;
         })();
 
-    trDetalle.innerHTML = `<td colspan="6"><div class="detalle-materiales">
+    return `<td colspan="6"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th><th></th></tr></thead>
         <tbody>${filasMat}</tbody>
       </table>
       ${botones}
     </div></td>`;
-    tbody.appendChild(trDetalle);
+    };
   });
+  tbody.appendChild(frag);
 
   if (pedidosOrdenados.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" style="color:var(--gris-claro);">No hay pedidos que coincidan.</td></tr>';
@@ -2700,13 +2740,15 @@ function renderizarPorMaterial(rubro) {
     grupo.pedidos[fila.pedido_numero].prioridad = grupo.pedidos[fila.pedido_numero].prioridad || !!fila.prioridad_manual;
   });
 
+  const cmpMat = comparadorMateriales(rubro);
+  const frag = document.createDocumentFragment();
   const codigosOrdenados = Object.keys(porMaterial)
     .filter(codigo => {
       const g = porMaterial[codigo];
       const texto = (codigo + ' ' + g.nombre + ' ' + Object.keys(g.pedidos).join(' ')).toLowerCase();
       return !filtroTexto || texto.includes(filtroTexto);
     })
-    .sort((a, b) => comparadorMateriales(rubro)({ ...porMaterial[a], codigo: Number(a) }, { ...porMaterial[b], codigo: Number(b) }));
+    .sort((a, b) => cmpMat({ ...porMaterial[a], codigo: Number(a) }, { ...porMaterial[b], codigo: Number(b) }));
 
   codigosOrdenados.forEach(codigo => {
     const g = porMaterial[codigo];
@@ -2720,9 +2762,11 @@ function renderizarPorMaterial(rubro) {
 
     const trMat = document.createElement('tr');
     trMat.className = 'fila-pedido';
+    // Igual que en la vista por pedido: el detalle se arma al abrirlo.
+    let detalleArmado = false;
     trMat.onclick = () => {
-      const det = document.getElementById('detmat-' + rubro + '-' + codigo);
-      det.style.display = det.style.display === 'none' ? 'table-row' : 'none';
+      if (!detalleArmado) { trDetalle.innerHTML = armarDetalle(); detalleArmado = true; }
+      trDetalle.style.display = trDetalle.style.display === 'none' ? 'table-row' : 'none';
     };
     trMat.innerHTML = `
       <td><strong>${codigo}</strong></td>
@@ -2735,8 +2779,15 @@ function renderizarPorMaterial(rubro) {
               onclick="event.stopPropagation(); ajustarStock(${codigo}, '${rubro}')"
               title="Corrige el stock físico de este material (merma, descarte, error de conteo)">Ajustar stock</button>` : ''}</td>
     `;
-    tbody.appendChild(trMat);
+    frag.appendChild(trMat);
 
+    const trDetalle = document.createElement('tr');
+    trDetalle.className = 'detalle';
+    trDetalle.id = 'detmat-' + rubro + '-' + codigo;
+    trDetalle.style.display = 'none';
+    frag.appendChild(trDetalle);
+
+    const armarDetalle = () => {
     const filasPedido = pedidosDelMaterial
       .sort((a, b) => (a[1].fecha_salida || a[1].fecha_pactada || '').localeCompare(b[1].fecha_salida || b[1].fecha_pactada || ''))
       .map(([numero, p]) => { const epP = estadoPendiente(p.pendiente, p.camino); return `
@@ -2770,18 +2821,15 @@ function renderizarPorMaterial(rubro) {
         </tr>
       `; }).join('');
 
-    const trDetalle = document.createElement('tr');
-    trDetalle.className = 'detalle';
-    trDetalle.id = 'detmat-' + rubro + '-' + codigo;
-    trDetalle.style.display = 'none';
-    trDetalle.innerHTML = `<td colspan="7"><div class="detalle-materiales">
+    return `<td colspan="7"><div class="detalle-materiales">
       <table>
         <thead><tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Requerido</th><th>Pendiente</th><th>Estado</th><th></th></tr></thead>
         <tbody>${filasPedido}</tbody>
       </table>
     </div></td>`;
-    tbody.appendChild(trDetalle);
+    };
   });
+  tbody.appendChild(frag);
 
   if (codigosOrdenados.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
@@ -3310,6 +3358,7 @@ function etqOrdenar(filas) {
 
 async function cargarEtiquetas() {
   document.getElementById('etq-importar').style.display = puedeEscribir() ? 'block' : 'none';
+  cargarLibreria('JsBarcode').catch(() => {});  // se adelanta la descarga para cuando impriman
   const aviso = document.getElementById('etq-aviso');
   aviso.innerHTML = '';
   const { data, error } = await obtenerTodasLasFilas(() => sb.from('piezas').select('*').order('idhc_g'));
@@ -3527,7 +3576,10 @@ function svgCodigoBarras(valor, alturaBarras = 46, alturaMm = 16) {
 }
 
 function etqImprimir(alcance) {
-  if (typeof JsBarcode === 'undefined') { alert('No se pudo cargar la librería de códigos de barras (¿sin internet?). Recargá la página.'); return; }
+  if (typeof JsBarcode === 'undefined') {
+    cargarLibreria('JsBarcode').then(() => etqImprimir(alcance), e => alert(e.message));
+    return;
+  }
   let filas;
   if (alcance === 'seleccion') filas = etqOrdenar(piezasCache.filter(p => etqSeleccion.has(p.idhc_g)));
   else filas = etqFiltradas(alcance);
@@ -3688,6 +3740,7 @@ async function importarPiezas() {
     if (/<html|<table|<form/i.test(texto.slice(0, 2000))) {
       registros = leerTablaHTML(texto);
     } else {
+      await cargarLibreria('XLSX');
       const wb = XLSX.read(await input.files[0].arrayBuffer());
       registros = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }).map(r => {
         const o = {}; Object.keys(r).forEach(k => o[k.trim()] = String(r[k]).trim()); return o;
@@ -4425,6 +4478,12 @@ async function importarStockFisico() {
     filas = registrosHTML;
   } else {
     const buffer = await archivo.arrayBuffer();
+    try {
+      await cargarLibreria('XLSX');
+    } catch (e) {
+      aviso.innerHTML = `<div class="aviso error">${escaparHTML(e.message)}</div>`;
+      return;
+    }
     const libro = XLSX.read(buffer, { type: 'array' });
     const hoja = libro.Sheets[libro.SheetNames[0]];
     filas = XLSX.utils.sheet_to_json(hoja, { defval: '' });

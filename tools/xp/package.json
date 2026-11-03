@@ -1,0 +1,17 @@
+{
+  "name": "build-xp",
+  "private": true,
+  "type": "module",
+  "description": "Genera xp.html (Chrome 49 / Windows XP) a partir de index.html",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "abortcontroller-polyfill": "^1.7.5",
+    "core-js": "^3.39.0",
+    "esbuild": "^0.24.0"
+  }
+}

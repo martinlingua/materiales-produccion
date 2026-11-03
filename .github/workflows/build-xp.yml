@@ -1,0 +1,37 @@
+# Cada vez que cambia index.html (o el generador), arma xp.html de nuevo y lo
+# sube al repo, así la versión para Windows XP nunca queda desactualizada.
+name: Generar xp.html
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - index.html
+      - tools/xp/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/xp/package-lock.json
+      - run: npm ci
+        working-directory: tools/xp
+      - run: npm run build
+        working-directory: tools/xp
+      - name: Subir xp.html si cambió
+        run: |
+          if git diff --quiet -- xp.html; then echo "xp.html sin cambios"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add xp.html
+          git commit -m "Regenerar xp.html desde index.html"
+          git push
