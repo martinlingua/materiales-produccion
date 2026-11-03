@@ -703,7 +703,11 @@ nav.tabs > * { margin-right: 2px; }
             <input type="date" id="etq-hasta" onchange="etqPoblarPedidos()">
           </label>
           <label>Buscar nº de pedido
-            <input type="text" id="etq-buscar-pedido" placeholder="Ej: 94765" oninput="etqPoblarPedidos()" style="width:120px;">
+            <span style="display:flex;">
+              <!-- Busca recién con Enter o el botón: filtrar en cada tecla traba con muchas piezas -->
+              <input type="text" id="etq-buscar-pedido" placeholder="Ej: 94765" onkeydown="if (event.key === 'Enter' || event.keyCode === 13) etqPoblarPedidos()" style="width:120px;">
+              <button type="button" class="primario" onclick="etqPoblarPedidos()" style="margin-left:6px; padding:6px 12px;">Buscar</button>
+            </span>
           </label>
         </div>
         <div class="fila-form">
