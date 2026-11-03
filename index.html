@@ -104,6 +104,7 @@
   }
   .chip.entregado { background: #e3f2e3; color: var(--verde); }
   .chip.produccion { background: #fdf1d3; color: #8a6d00; }
+  .chip.con-faltantes { background: #fde8d3; color: #b25a00; }
 
   table.pedidos { width: 100%; border-collapse: collapse; background: var(--blanco); }
   table.pedidos th {
@@ -985,6 +986,7 @@ async function cargarUltimaImportacion() {
 // la vez) y se guarda pedidos.entregado_en. Reabrirlo lo devuelve a la lista.
 let entregadoPorPedido = {};      // { nº de pedido: 'AAAA-MM-DD' } (pedidos.entregado_en)
 let columnaEntregaOk = true;      // false si todavía no se corrió sql_entregas.sql
+let columnaFaltanteOk = true;     // false si todavía no existe requerimientos.faltante_al_entregar
 
 function fechaPasada(fecha) {
   return !!fecha && fecha < fechaLocalISO(new Date());
@@ -1006,7 +1008,7 @@ async function cargarTodo() {
     // v_pendientes porque esa vista solo trae requerimientos activos.
     obtenerTodasLasFilas(() => sb
       .from('requerimientos')
-      .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
+      .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado, faltante_al_entregar')
       .eq('activo', false)
       .order('id')),
     obtenerTodasLasFilas(() => sb.from('pedidos').select('numero, cliente, fecha_pactada, fecha_ingreso, fecha_salida, entregado_en').order('numero')),
@@ -1029,7 +1031,16 @@ async function cargarTodo() {
   estadosPedidos = {};
   estados.forEach(e => estadosPedidos[e.numero] = e);
 
-  const { data: cerrados } = rCerrados;
+  let { data: cerrados, error: errCerrados } = rCerrados;
+  columnaFaltanteOk = !errCerrados;
+  if (errCerrados) {
+    // Todavía no existe la columna faltante_al_entregar: se lee sin ella.
+    ({ data: cerrados } = await obtenerTodasLasFilas(() => sb
+      .from('requerimientos')
+      .select('id, pedido_numero, material_codigo, material_rubro, cantidad_requerida, reemplazado_por, ignorado')
+      .eq('activo', false)
+      .order('id')));
+  }
   let { data: pedidosInfo, error: errPedInfo } = rPedidos;
   columnaEntregaOk = !errPedInfo;
   if (errPedInfo) {
@@ -1061,6 +1072,8 @@ async function cargarTodo() {
       reemplazado_por: r.reemplazado_por,
       ignorado: r.ignorado,
       pendiente: 0,
+      // Lo que faltaba cuando se marcó entregado (null: entregado antes de que existiera el dato).
+      faltante: Number(r.faltante_al_entregar) || 0,
     });
   });
 
@@ -2585,6 +2598,7 @@ function renderizarPorPedido(rubro) {
           requerido: 0,
           pendiente: 0,
           camino: 0,
+          faltante: 0,
           reemplazadoPor: m.reemplazado_por || null,
           ignorado: !!m.ignorado,
         };
@@ -2592,9 +2606,12 @@ function renderizarPorPedido(rubro) {
       porMaterial[m.material_codigo].requerido += Number(m.cantidad_requerida);
       porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
       porMaterial[m.material_codigo].camino += Number(m._camino || 0);
+      porMaterial[m.material_codigo].faltante += Number(m.faltante || 0);
     });
     const totalesTab = Object.values(porMaterial);
     const pendientesTab = totalesTab.filter(m => m.pendiente > 0).length;
+    // En los cerrados: cuántos materiales faltaban cuando se lo marcó entregado.
+    const faltabanTab = pedidoCerrado ? totalesTab.filter(m => m.faltante > 0.005).length : 0;
 
     const trPedido = document.createElement('tr');
     trPedido.className = 'fila-pedido';
@@ -2612,11 +2629,15 @@ function renderizarPorPedido(rubro) {
       <td><strong>${numero}</strong></td>
       <td>${cliente}</td>
       <td>${fechaSalida || '<span style="color:var(--gris-claro);">—</span>'}</td>
-      <td>${pedidoCerrado ? '—' : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
+      <td>${pedidoCerrado
+        ? (faltabanTab ? `<span style="color:#b25a00;">${faltabanTab} de ${totalesTab.length} faltaban (${rubro})</span>` : '—')
+        : pendientesTab + ' de ' + totalesTab.length + ` (${rubro})`}</td>
       <td>
         ${pedidoCerrado
           ? (salidaReal
-              ? `<span class="chip entregado">Entregado ${formatearFechaCorta(salidaReal)}</span>`
+              ? (faltabanTab
+                  ? `<span class="chip con-faltantes" title="Cuando se lo marcó entregado faltaba material">Entregado con faltantes ${formatearFechaCorta(salidaReal)}</span>`
+                  : `<span class="chip entregado">Entregado ${formatearFechaCorta(salidaReal)}</span>`)
               : '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>')
           : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Material completo' : 'En producción'}</span>
              ${fechaPasada(fechaSalida) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;" title="La fecha de salida ya pasó y el pedido no se marcó como entregado">Atrasado</span>' : ''}
@@ -2641,7 +2662,9 @@ function renderizarPorPedido(rubro) {
         <td>${codigo}</td>
         <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}${m.ignorado ? ' <span style="color:var(--gris-claro);font-size:12px;">→ ignorado (no es faltante)</span>' : ''}</td>
         <td>${redondear2(m.requerido)}</td>
-        <td class="${ep.cls} pend-num">${redondear2(m.pendiente)}${ep.extra}</td>
+        ${pedidoCerrado
+          ? `<td class="pend-num" style="${m.faltante > 0.005 ? 'color:#b25a00; font-weight:600;' : 'color:var(--gris-claro);'}">${m.faltante > 0.005 ? redondear2(m.faltante) : '—'}</td>`
+          : `<td class="${ep.cls} pend-num">${redondear2(m.pendiente)}${ep.extra}</td>`}
         <td>${m.proveedor || ''}</td>
         <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (pedidoCerrado
           ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
@@ -2678,7 +2701,7 @@ function renderizarPorPedido(rubro) {
 
     return `<td colspan="6"><div class="detalle-materiales">
       <table>
-        <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>Pendiente</th><th>Proveedor</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>${pedidoCerrado ? 'Faltaba al entregar' : 'Pendiente'}</th><th>Proveedor</th><th></th></tr></thead>
         <tbody>${filasMat}</tbody>
       </table>
       ${botones}
@@ -2735,9 +2758,11 @@ function renderizarPorMaterial(rubro) {
         requerido: 0,
         pendiente: 0,
         camino: 0,
+        faltante: 0,
         prioridad: false,
       };
     }
+    grupo.pedidos[fila.pedido_numero].faltante += Number(fila.faltante || 0);
     grupo.pedidos[fila.pedido_numero].requerido += Number(fila.cantidad_requerida);
     grupo.pedidos[fila.pedido_numero].pendiente += Number(fila.pendiente);
     grupo.pedidos[fila.pedido_numero].camino += Number(fila._camino || 0);
@@ -2803,7 +2828,9 @@ function renderizarPorMaterial(rubro) {
           <td class="${epP.cls} pend-num">${redondear2(p.pendiente)}${epP.extra}</td>
           <td>
             ${p.cerrado
-              ? (fechaSalidaReal(numero, p.fecha_salida) ? 'Entregado' : 'Cerrado manualmente')
+              ? (fechaSalidaReal(numero, p.fecha_salida)
+                  ? (p.faltante > 0.005 ? `<span style="color:#b25a00;">Entregado con faltante (${redondear2(p.faltante)})</span>` : 'Entregado')
+                  : 'Cerrado manualmente')
               : `${p.estado === 'entregado' ? 'Material completo' : 'En producción'}${fechaPasada(p.fecha_salida) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Atrasado</span>' : ''}${p.prioridad ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
             }
           </td>
@@ -2879,6 +2906,7 @@ function avisoFaltaColumnaEntrega() {
 async function marcarEntregados(numeros, fecha) {
   for (let i = 0; i < numeros.length; i += 150) {
     const tanda = numeros.slice(i, i + 150);
+    if (columnaFaltanteOk && !(await guardarFaltantes(tanda))) { await cargarTodo(); return false; }
     const { error: e1 } = await sb.from('requerimientos').update({ activo: false }).in('pedido_numero', tanda).eq('activo', true);
     if (e1) { alert('No se pudieron cerrar los pedidos: ' + e1.message); await cargarTodo(); return false; }
     const { error: e2 } = await sb.from('pedidos').update({ entregado_en: fecha }).in('numero', tanda);
@@ -2888,10 +2916,32 @@ async function marcarEntregados(numeros, fecha) {
   return true;
 }
 
+// Antes de cerrar, anota en cada requerimiento lo que todavía faltaba, para
+// que el pedido figure "Entregado con faltantes". Se agrupan por cantidad
+// para hacer una actualización por valor y no una por fila.
+async function guardarFaltantes(pedidos) {
+  const enTanda = new Set(pedidos);
+  const idsPorCantidad = {};
+  [...datosPendientes.herraje, ...datosPendientes.insumo].forEach(f => {
+    const pend = Number(f.pendiente);
+    if (!enTanda.has(f.pedido_numero) || !(pend > 0.005)) return;
+    (idsPorCantidad[pend] = idsPorCantidad[pend] || []).push(f.requerimiento_id);
+  });
+  for (const [cantidad, ids] of Object.entries(idsPorCantidad)) {
+    for (let i = 0; i < ids.length; i += 150) {
+      const { error } = await sb.from('requerimientos').update({ faltante_al_entregar: Number(cantidad) }).in('id', ids.slice(i, i + 150));
+      if (error) { alert('No se pudo guardar lo que faltaba de cada material: ' + error.message); return false; }
+    }
+  }
+  return true;
+}
+
 async function reabrirPedidos(numeros) {
   for (let i = 0; i < numeros.length; i += 150) {
     const tanda = numeros.slice(i, i + 150);
-    const { error: e1 } = await sb.from('requerimientos').update({ activo: true })
+    // Al reabrir se borra lo que faltaba: si se vuelve a entregar se anota de nuevo.
+    const cambios = columnaFaltanteOk ? { activo: true, faltante_al_entregar: null } : { activo: true };
+    const { error: e1 } = await sb.from('requerimientos').update(cambios)
       .in('pedido_numero', tanda).eq('activo', false).is('reemplazado_por', null).eq('ignorado', false);
     if (e1) { alert('No se pudieron reabrir los pedidos: ' + e1.message); await cargarTodo(); return false; }
     if (columnaEntregaOk) {
