@@ -2655,6 +2655,7 @@ function renderizarPorPedido(rubro) {
           pendiente: 0,
           camino: 0,
           faltante: 0,
+          cortado: false,
           reemplazadoPor: m.reemplazado_por || null,
           ignorado: !!m.ignorado,
         };
@@ -2663,6 +2664,7 @@ function renderizarPorPedido(rubro) {
       porMaterial[m.material_codigo].pendiente += Number(m.pendiente);
       porMaterial[m.material_codigo].camino += Number(m._camino || 0);
       porMaterial[m.material_codigo].faltante += Number(m.faltante || 0);
+      if (m.consumido_por_corte) porMaterial[m.material_codigo].cortado = true;
     });
     const totalesTab = Object.values(porMaterial);
     const pendientesTab = totalesTab.filter(m => m.pendiente > 0).length;
@@ -2721,7 +2723,7 @@ function renderizarPorPedido(rubro) {
         <td>${redondear2(m.requerido)}</td>
         ${pedidoCerrado
           ? `<td class="pend-num" style="${m.faltante > 0.005 ? 'color:#b25a00; font-weight:600;' : 'color:var(--gris-claro);'}">${m.faltante > 0.005 ? redondear2(m.faltante) : '—'}</td>`
-          : `<td class="${ep.cls} pend-num">${redondear2(m.pendiente)}${ep.extra}</td>`}
+          : `<td class="${ep.cls} pend-num">${redondear2(m.pendiente)}${ep.extra}${m.cortado ? '<div class="tag-camino" style="color:#1d5a8a;" title="La placa ya se cortó (planilla Selco): el material se da por usado y no toma stock">cortado</div>' : ''}</td>`}
         <td>${m.proveedor || ''}</td>
         <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (pedidoCerrado
           ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
@@ -4447,6 +4449,8 @@ async function importarSelco() {
     const texto = v => String(v == null ? '' : v).trim();
     const fechaISO = v => v instanceof Date && !isNaN(v)
       ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}` : null;
+    const indice = indiceCatalogoPlacas();
+    const codigosPorPlaca = {};
     const registros = [];
     let loteActual = null, pedidoActual = null, sinPedido = 0;
     filas.slice(iEnc + 1).forEach(f => {
@@ -4456,9 +4460,15 @@ async function importarSelco() {
       const pedido = parseInt(texto(f[col.pedido]));
       if (Number.isFinite(pedido)) pedidoActual = pedido;
       const placa = texto(f[col.placa]);
-      if (!placa) return;
+      if (!placa) {
+        // Pedido del lote sin placa en su fila: igual se guarda que está en
+        // el lote, para que le cuenten las placas cortadas del lote.
+        if (Number.isFinite(pedido)) registros.push({ pedido_numero: pedido, lote: lote || null, placa: '', cantidad: null, fecha_corte: null, cortado: false, materiales_codigos: null });
+        return;
+      }
       if (!pedidoActual) { sinPedido++; return; }
       const cant = parseFloat(String(f[col.cantidad]).replace(',', '.'));
+      if (!(placa in codigosPorPlaca)) codigosPorPlaca[placa] = codigoDePlaca(placa, indice);
       registros.push({
         pedido_numero: pedidoActual,
         lote: lote || null,
@@ -4466,6 +4476,7 @@ async function importarSelco() {
         cantidad: Number.isFinite(cant) ? cant : null,
         fecha_corte: col.fecha >= 0 ? fechaISO(f[col.fecha]) : null,
         cortado: normalizarTexto(f[col.cortado]).startsWith('si'),
+        materiales_codigos: codigosPorPlaca[placa],
       });
     });
     if (!registros.length) throw new Error('No encontré placas con nº de pedido en la hoja Selco.');
@@ -4474,9 +4485,16 @@ async function importarSelco() {
     const { error } = await sb.rpc('reemplazar_cortes_selco', { p_filas: registros });
     if (error) throw new Error(error.message + (/function|funci/i.test(error.message) ? ' (¿falta correr en Supabase el script de cortes?)' : ''));
 
+    const placas = registros.filter(r => r.placa);
     const pedidos = new Set(registros.map(r => r.pedido_numero));
-    const conCorte = new Set(registros.filter(r => r.cortado).map(r => r.pedido_numero));
-    aviso.innerHTML = `<div class="aviso ok">Listo: ${registros.length} placas de ${pedidos.size} pedidos; ${conCorte.size} pedidos tienen al menos una placa cortada.${sinPedido ? ` ${sinPedido} placas sin pedido en su lote se ignoraron.` : ''}</div>`;
+    const conCorte = new Set(placas.filter(r => r.cortado).map(r => r.pedido_numero));
+    // Placas cortadas de lotes con pedidos abiertos que no se pudieron
+    // relacionar con un insumo: esas no descuentan nada, conviene saberlo.
+    const abiertos = new Set(datosPendientes.insumo.map(f => f.pedido_numero));
+    const lotesAbiertos = new Set(registros.filter(r => abiertos.has(r.pedido_numero)).map(r => r.lote));
+    const sinRelacion = [...new Set(placas.filter(r => r.cortado && !r.materiales_codigos && lotesAbiertos.has(r.lote)).map(r => r.placa))].sort();
+    aviso.innerHTML = `<div class="aviso ok">Listo: ${placas.length} placas de ${pedidos.size} pedidos; ${conCorte.size} pedidos tienen al menos una placa cortada.${sinPedido ? ` ${sinPedido} placas sin pedido en su lote se ignoraron.` : ''}</div>`
+      + (sinRelacion.length ? `<div class="aviso info">Placas cortadas de pedidos abiertos que no encontré en el catálogo (no descuentan material): ${sinRelacion.map(escaparHTML).join(', ')}.</div>` : '');
     input.value = '';
     await cargarTodo();
   } catch (e) {
@@ -4484,10 +4502,65 @@ async function importarSelco() {
   }
 }
 
+// Relación entre el nombre de la placa en Selco y el insumo del catálogo:
+//  - "(Blanco MDF 18)", "Blanco MDF 25"  -> MELAMINA <color> S/MDF <espesor>
+//  - "25 Blanco" (solo color y medida)    -> SUPERPLAC <color> <espesor>
+//  - "18 Aglomerado"                      -> AGLOMERADO <espesor>
+//  - "Nogal" en la planilla es "Roble Dakar" en el sistema.
+// Devuelve los códigos del insumo (más de uno si el catálogo lo tiene
+// repetido con el mismo nombre) o null si no hay uno claro.
+const SELCO_SINONIMOS = { am: 'americano', carv: 'carvalho', escand: 'escandinavo', camelia: 'camellia' };
+const SELCO_RUIDO = new Set(['nature', 'nat', 'natural', 'ap', 'txt', 'woodtext', 'nordica', 'egger', 'linea', 'mesopotamica', 'del']);
+const tokensPlaca = t => normalizarTexto(t).replace(/[()]/g, ' ').replace(/(\d),(\d)/g, '$1.$2')
+  .split(/[\s\-]+/).map(p => p.replace(/\.$/, '')).filter(Boolean);
+
+function indiceCatalogoPlacas() {
+  return materialesCache.filter(m => m.rubro === 'insumo').map(m => {
+    const n = normalizarTexto(m.nombre);
+    const tipo = n.startsWith('melamina') ? 'mel' : n.startsWith('superplac') ? 'spc' : n.startsWith('aglomerado') ? 'aglo' : null;
+    if (!tipo) return null;
+    const esp = /(\d+(?:\.\d+)?)\s*mm/.exec(n.replace(/,/g, '.'));
+    // El color es lo que va entre el tipo y "s/mdf" o el primer número/código.
+    const color = [];
+    for (const p of tokensPlaca(n.split('s/mdf')[0]).slice(1)) {
+      if (/\d/.test(p)) break;
+      if (!SELCO_RUIDO.has(p)) color.push(p);
+    }
+    return { codigo: m.codigo, tipo, espesor: esp ? Number(esp[1]) : null, color };
+  }).filter(Boolean);
+}
+
+function codigoDePlaca(nombre, indice) {
+  let espesor = null, mdf = false, aglo = false;
+  let color = [];
+  for (const p of tokensPlaca(nombre)) {
+    if (/^\d+(\.\d+)?$/.test(p)) { if (espesor === null) espesor = Number(p); continue; }
+    if (p === 'mdf') { mdf = true; continue; }
+    if (p === 'aglomerado') { aglo = true; continue; }
+    if (['formica', 'f', 'acrilico', 'karical'].includes(p)) return null;  // no son melamina ni superplac
+    color.push(SELCO_SINONIMOS[p] || p);
+  }
+  if (color.length === 1 && color[0] === 'nogal') color = ['roble', 'dakar'];
+  const tipo = aglo ? 'aglo' : !color.length ? null : mdf ? 'mel' : 'spc';
+  if (!tipo || espesor === null) return null;
+  const candidatos = indice.filter(c => c.tipo === tipo && (c.espesor === espesor || c.espesor === null)
+    && color.every(p => c.color.includes(p)));
+  // Primero el que tiene exactamente ese color (con el espesor exacto); si no,
+  // el único que agrega menos palabras ("Kendal Encerado" -> "Roble Kendal Encerado").
+  const extra = c => c.color.length - color.length + (c.espesor === null ? 0.5 : 0);
+  candidatos.sort((a, b) => extra(a) - extra(b));
+  if (!candidatos.length) return null;
+  const empatados = candidatos.filter(c => extra(c) === extra(candidatos[0]));
+  // Si empatan insumos de colores distintos no se adivina.
+  const mismoColor = c => c.color.join(' ') === empatados[0].color.join(' ') && c.espesor === empatados[0].espesor;
+  return empatados.every(mismoColor) ? empatados.map(c => c.codigo) : null;
+}
+
 // Resumen de corte de un pedido para mostrar: null si no tiene placas cortadas.
 function resumenCorte(numero) {
-  const placas = cortesPorPedido[numero];
-  if (!placas) return null;
+  // Las filas sin placa solo dicen en qué lote está el pedido.
+  const placas = (cortesPorPedido[numero] || []).filter(p => p.placa);
+  if (!placas.length) return null;
   const cortadas = placas.filter(p => p.cortado).length;
   if (!cortadas) return null;
   return {
