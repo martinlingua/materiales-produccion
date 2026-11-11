@@ -105,6 +105,7 @@
   .chip.entregado { background: #e3f2e3; color: var(--verde); }
   .chip.produccion { background: #fdf1d3; color: #8a6d00; }
   .chip.con-faltantes { background: #fde8d3; color: #b25a00; }
+  .chip.cortado { background: #dcebf7; color: #1d5a8a; }
 
   table.pedidos { width: 100%; border-collapse: collapse; background: var(--blanco); }
   table.pedidos th {
@@ -225,6 +226,7 @@
   <nav class="tabs">
     <button data-tab="herraje" class="tab-btn activa" onclick="cambiarTab('herraje')">Herrajes</button>
     <button data-tab="insumo" class="tab-btn" onclick="cambiarTab('insumo')">Insumos</button>
+    <button data-tab="existencias" class="tab-btn" onclick="cambiarTab('existencias')">Stock actual</button>
     <button data-tab="alertas" id="btn-tab-alertas" class="tab-btn" onclick="cambiarTab('alertas')">Alertas</button>
     <button data-tab="recepcion" class="tab-btn" onclick="cambiarTab('recepcion')">Cargar recepción</button>
     <button data-tab="etiquetas" class="tab-btn" onclick="cambiarTab('etiquetas')">Etiquetas de piezas</button>
@@ -349,6 +351,34 @@
       <table class="pedidos"><thead id="thead-insumo">
         <tr><th>Pedido</th><th>Cliente</th><th>F. salida</th><th>Materiales pendientes</th><th>Estado</th></tr>
       </thead><tbody id="tbody-insumo"></tbody></table>
+    </section>
+
+    <!-- STOCK ACTUAL: todos los materiales, aunque estén en cero o nadie los pida -->
+    <section id="sec-existencias" class="seccion">
+      <div class="barra-filtros">
+        <input type="text" id="exi-buscar" placeholder="Buscar código, material o categoría..." oninput="renderizarExistencias()">
+        <select id="exi-rubro" onchange="renderizarExistencias()">
+          <option value="">Herrajes e insumos</option>
+          <option value="herraje">Solo herrajes</option>
+          <option value="insumo">Solo insumos</option>
+        </select>
+        <select id="exi-filtro" onchange="renderizarExistencias()">
+          <option value="">Todos (incluso en cero)</option>
+          <option value="con">Solo con stock</option>
+          <option value="sin">Solo en cero</option>
+          <option value="faltan">Lo pedido supera el stock</option>
+        </select>
+        <button class="primario" style="font-size:12px; padding:6px 10px;" onclick="cargarExistencias()">Actualizar</button>
+        <button class="primario" style="font-size:12px; padding:6px 10px; background:var(--gris-claro);" onclick="descargarExistencias()">Descargar Excel</button>
+      </div>
+      <p style="font-size:12px; color:var(--gris-claro); margin:0 0 8px;">
+        Stock físico = último conteo + recepciones generales posteriores (el mismo que se reparte entre los pedidos).
+        "Pedido abierto" es lo que piden los pedidos activos, descontando lo recibido directo para cada pedido.
+      </p>
+      <div id="exi-aviso"></div>
+      <table class="pedidos"><thead>
+        <tr><th>Código</th><th>Material</th><th>Rubro</th><th>Categoría</th><th>Stock físico</th><th>Pedido abierto</th><th>Libre</th><th>En camino</th><th>Último conteo</th></tr>
+      </thead><tbody id="tbody-existencias"></tbody></table>
     </section>
 
     <!-- RECEPCION -->
@@ -602,6 +632,24 @@
           <button class="primario" onclick="actualizarFechasSeguimiento()">Actualizar fechas</button>
         </div>
         <div id="fechas-aviso"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Cargar lo cortado (planilla de producción)</h2>
+        <p style="font-size:13px; color:var(--gris-claro); margin-top:-6px;">
+          Subí la planilla de Producción General: se lee la hoja <strong>Selco</strong> (columnas <strong>Lote</strong>,
+          <strong>Nº Pedido</strong>, <strong>Material</strong>, <strong>Cortado</strong>). Cada placa queda asociada a su
+          pedido; las filas sin nº de pedido van al pedido de arriba dentro del mismo lote. Los pedidos con alguna placa
+          cortada se marcan como <strong>Cortado</strong> y pasan primero en el reparto del stock. Cada carga reemplaza
+          la anterior.
+        </p>
+        <div class="fila-form">
+          <label>Archivo (.xlsx)
+            <input type="file" id="selco-archivo" accept=".xlsx,.xlsm,.xls">
+          </label>
+          <button class="primario" onclick="importarSelco()">Cargar cortes</button>
+        </div>
+        <div id="selco-aviso"></div>
       </div>
     </section>
 
@@ -905,6 +953,7 @@ function cambiarTab(tab) {
   if (tab === 'alertas') renderizarAlertas();
   if (tab === 'indicadores') cargarIndicadores();
   if (tab === 'etiquetas') cargarEtiquetas();
+  if (tab === 'existencias') cargarExistencias();
 }
 
 // ---------------------------------------------------------------------
@@ -987,6 +1036,7 @@ async function cargarUltimaImportacion() {
 let entregadoPorPedido = {};      // { nº de pedido: 'AAAA-MM-DD' } (pedidos.entregado_en)
 let columnaEntregaOk = true;      // false si todavía no se corrió sql_entregas.sql
 let columnaFaltanteOk = true;     // false si todavía no existe requerimientos.faltante_al_entregar
+let cortesPorPedido = {};         // nº de pedido -> placas de la hoja Selco [{ lote, placa, cantidad, fecha_corte, cortado }]
 
 function fechaPasada(fecha) {
   return !!fecha && fecha < fechaLocalISO(new Date());
@@ -1001,7 +1051,7 @@ function fechaSalidaReal(numero, fechaSalida) {
 async function cargarTodo() {
   // Todas las lecturas salen juntas en vez de una detrás de otra: son unas
   // 60 páginas de 1000 filas y en serie la espera se suma.
-  const [rPend, rEstados, rCerrados, rPedidos, rMats] = await Promise.all([
+  const [rPend, rEstados, rCerrados, rPedidos, rMats, , rCortes] = await Promise.all([
     obtenerTodasLasFilas(() => sb.from('v_pendientes').select('*').order('requerimiento_id')),
     obtenerTodasLasFilas(() => sb.from('v_estado_pedidos').select('*').order('numero')),
     // Requerimientos cerrados a mano (activo = false) — no viven en
@@ -1015,7 +1065,11 @@ async function cargarTodo() {
     // Una sola lectura del catálogo: sirve para los cerrados y para el buscador.
     obtenerTodasLasFilas(() => sb.from('materiales').select('codigo, rubro, nombre, umed, proveedor, unidad_conteo, factor_conversion').order('codigo')),
     cargarEnCaminoDatos(),
+    obtenerTodasLasFilas(() => sb.from('cortes_selco').select('pedido_numero, lote, placa, cantidad, fecha_corte, cortado').order('id')),
   ]);
+  // Si todavía no existe la tabla de cortes, simplemente no se marca nada.
+  cortesPorPedido = {};
+  (rCortes.data || []).forEach(c => (cortesPorPedido[c.pedido_numero] = cortesPorPedido[c.pedido_numero] || []).push(c));
   const { data: pend, error: e1 } = rPend;
   const { data: estados, error: e2 } = rEstados;
   if (e1 || e2) {
@@ -2577,8 +2631,10 @@ function renderizarPorPedido(rubro) {
     const estado = { ...estadoBase, estado: estadoEfectivo(estadoBase.estado) };
     const salidaReal = fechaSalidaReal(numero, fechaSalida);
     const pedidoCerrado = materiales.every(m => m._cerrado);
+    const corte = resumenCorte(numero);
 
-    const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ')).toLowerCase();
+    // "cortado" en el buscador filtra los pedidos que ya tienen placas cortadas.
+    const textoBusqueda = (numero + ' ' + cliente + ' ' + materiales.map(m => m.material_nombre).join(' ') + (corte ? ' cortado' : '')).toLowerCase();
     if (filtroTexto && !textoBusqueda.includes(filtroTexto)) return;
     if (!pedidoCerrado && filtroEstado !== 'todos' && filtroEstado !== 'semana' && estado.estado !== filtroEstado) return;
     if (!pedidoCerrado && ocultarCubierto && estado.estado === 'entregado') return;
@@ -2641,7 +2697,8 @@ function renderizarPorPedido(rubro) {
               : '<span class="chip" style="background:#e8e6e0;color:var(--gris-oscuro);">Cerrado manualmente</span>')
           : `<span class="chip ${estado.estado === 'entregado' ? 'entregado' : 'produccion'}">${estado.estado === 'entregado' ? 'Material completo' : 'En producción'}</span>
              ${fechaPasada(fechaSalida) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;" title="La fecha de salida ya pasó y el pedido no se marcó como entregado">Atrasado</span>' : ''}
-             ${materiales.some(m => m.prioridad_manual) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}`
+             ${materiales.some(m => m.prioridad_manual) ? ' <span class="chip produccion" style="background:#fde3e3;color:#a33;">Priorizado</span>' : ''}
+             ${corte ? ` <span class="chip cortado" title="${escaparHTML(corte.detalle)}">${corte.texto}</span>` : ''}`
         }
       </td>
     `;
@@ -2699,7 +2756,11 @@ function renderizarPorPedido(rubro) {
           `;
         })();
 
+    const lineaCorte = corte
+      ? `<div style="font-size:12px; margin-bottom:6px;"><span class="chip cortado">${corte.texto}</span> Lote ${escaparHTML(corte.lotes)} — ${escaparHTML(corte.detalle)}</div>`
+      : '';
     return `<td colspan="6"><div class="detalle-materiales">
+      ${lineaCorte}
       <table>
         <thead><tr><th>Código</th><th>Material</th><th>Requerido</th><th>${pedidoCerrado ? 'Faltaba al entregar' : 'Pendiente'}</th><th>Proveedor</th><th></th></tr></thead>
         <tbody>${filasMat}</tbody>
@@ -4347,6 +4408,177 @@ async function actualizarFechasSeguimiento() {
   }
   aviso.innerHTML = mensaje;
   archivoInput.value = '';
+}
+
+// ---------------------------------------------------------------------
+// CORTES (hoja "Selco" de la planilla de producción): qué placas de cada
+// pedido ya se cortaron. Cada carga reemplaza la anterior entera.
+// ---------------------------------------------------------------------
+async function importarSelco() {
+  const aviso = document.getElementById('selco-aviso');
+  const input = document.getElementById('selco-archivo');
+  if (!input.files.length) { aviso.innerHTML = '<div class="aviso error">Elegí un archivo primero.</div>'; return; }
+  aviso.innerHTML = '<div class="aviso info">Leyendo la planilla (es grande, puede tardar unos segundos)...</div>';
+  try {
+    await cargarLibreria('XLSX');
+    const buffer = await input.files[0].arrayBuffer();
+    // Primero solo los nombres de las hojas; después se lee únicamente Selco
+    // (leer el libro entero tarda mucho más).
+    const nombres = XLSX.read(buffer, { type: 'array', bookSheets: true }).SheetNames;
+    const hoja = nombres.find(n => normalizarTexto(n) === 'selco');
+    if (!hoja) throw new Error('La planilla no tiene una hoja "Selco". Hojas: ' + nombres.join(', '));
+    const libro = XLSX.read(buffer, { type: 'array', sheets: hoja, cellDates: true, dense: true });
+    const filas = XLSX.utils.sheet_to_json(libro.Sheets[hoja], { header: 1, raw: true, defval: '' });
+
+    const iEnc = filas.findIndex(f => f.some(c => normalizarTexto(c) === 'cortado'));
+    if (iEnc < 0) throw new Error('No encontré la fila de títulos (con la columna "Cortado") en la hoja Selco.');
+    const enc = filas[iEnc].map(c => normalizarTexto(c));
+    const col = {
+      lote: enc.indexOf('lote'),
+      pedido: enc.findIndex(t => t.includes('pedido')),
+      placa: enc.indexOf('material'),
+      cantidad: enc.findIndex(t => t.startsWith('cant')),
+      fecha: enc.findIndex(t => t.includes('corte')),
+      cortado: enc.indexOf('cortado'),
+    };
+    const faltan = ['lote', 'pedido', 'placa', 'cortado'].filter(k => col[k] < 0);
+    if (faltan.length) throw new Error('A la hoja Selco le faltan columnas: ' + faltan.join(', '));
+
+    const texto = v => String(v == null ? '' : v).trim();
+    const fechaISO = v => v instanceof Date && !isNaN(v)
+      ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}` : null;
+    const registros = [];
+    let loteActual = null, pedidoActual = null, sinPedido = 0;
+    filas.slice(iEnc + 1).forEach(f => {
+      const lote = texto(f[col.lote]);
+      if (!lote && !texto(f[col.pedido]) && !texto(f[col.placa])) return;
+      if (lote !== loteActual) { loteActual = lote; pedidoActual = null; }
+      const pedido = parseInt(texto(f[col.pedido]));
+      if (Number.isFinite(pedido)) pedidoActual = pedido;
+      const placa = texto(f[col.placa]);
+      if (!placa) return;
+      if (!pedidoActual) { sinPedido++; return; }
+      const cant = parseFloat(String(f[col.cantidad]).replace(',', '.'));
+      registros.push({
+        pedido_numero: pedidoActual,
+        lote: lote || null,
+        placa,
+        cantidad: Number.isFinite(cant) ? cant : null,
+        fecha_corte: col.fecha >= 0 ? fechaISO(f[col.fecha]) : null,
+        cortado: normalizarTexto(f[col.cortado]).startsWith('si'),
+      });
+    });
+    if (!registros.length) throw new Error('No encontré placas con nº de pedido en la hoja Selco.');
+
+    aviso.innerHTML = '<div class="aviso info">Guardando...</div>';
+    const { error } = await sb.rpc('reemplazar_cortes_selco', { p_filas: registros });
+    if (error) throw new Error(error.message + (/function|funci/i.test(error.message) ? ' (¿falta correr en Supabase el script de cortes?)' : ''));
+
+    const pedidos = new Set(registros.map(r => r.pedido_numero));
+    const conCorte = new Set(registros.filter(r => r.cortado).map(r => r.pedido_numero));
+    aviso.innerHTML = `<div class="aviso ok">Listo: ${registros.length} placas de ${pedidos.size} pedidos; ${conCorte.size} pedidos tienen al menos una placa cortada.${sinPedido ? ` ${sinPedido} placas sin pedido en su lote se ignoraron.` : ''}</div>`;
+    input.value = '';
+    await cargarTodo();
+  } catch (e) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo cargar: ${escaparHTML(e.message)}</div>`;
+  }
+}
+
+// Resumen de corte de un pedido para mostrar: null si no tiene placas cortadas.
+function resumenCorte(numero) {
+  const placas = cortesPorPedido[numero];
+  if (!placas) return null;
+  const cortadas = placas.filter(p => p.cortado).length;
+  if (!cortadas) return null;
+  return {
+    completo: cortadas === placas.length,
+    texto: cortadas === placas.length ? 'Cortado' : `Corte parcial ${cortadas}/${placas.length}`,
+    detalle: placas.map(p => `${p.placa}${p.cantidad ? ' ×' + redondear2(p.cantidad) : ''}: ${p.cortado ? 'cortada' + (p.fecha_corte ? ' ' + formatearFechaCorta(p.fecha_corte) : '') : 'sin cortar'}`).join(' · '),
+    lotes: [...new Set(placas.map(p => p.lote).filter(Boolean))].join(', '),
+  };
+}
+
+// ---------------------------------------------------------------------
+// STOCK ACTUAL (v_stock_fisico): todos los materiales con su stock físico,
+// lo que piden los pedidos abiertos y lo que está en camino.
+// ---------------------------------------------------------------------
+let existencias = [];
+const EXI_MAX_FILAS = 500;  // más filas que esto traba las PCs viejas; se pide filtrar
+
+async function cargarExistencias() {
+  const aviso = document.getElementById('exi-aviso');
+  aviso.innerHTML = '<div class="aviso info">Cargando stock...</div>';
+  const { data, error } = await obtenerTodasLasFilas(() => sb.from('v_stock_fisico')
+    .select('codigo, rubro, nombre, umed, categoria, stock, fecha_conteo').order('rubro').order('codigo'));
+  if (error) {
+    aviso.innerHTML = `<div class="aviso error">No se pudo leer el stock: ${escaparHTML(error.message)}${/v_stock_fisico/.test(error.message) ? ' (¿falta correr en Supabase el script de la vista v_stock_fisico?)' : ''}</div>`;
+    return;
+  }
+  // Lo que piden los pedidos abiertos = lo cubierto por stock + lo pendiente.
+  const pedido = {};
+  ['herraje', 'insumo'].forEach(ru => datosPendientes[ru].forEach(f => {
+    const k = f.material_codigo + '|' + ru;
+    pedido[k] = (pedido[k] || 0) + Number(f.cubierto_por_stock_general || 0) + Number(f.pendiente || 0);
+  }));
+  existencias = (data || []).map(m => {
+    const k = m.codigo + '|' + m.rubro;
+    const stock = Number(m.stock) || 0, pedidoAbierto = pedido[k] || 0;
+    return { ...m, stock, pedidoAbierto, libre: stock - pedidoAbierto, camino: (enCaminoPorMaterial[k] || {}).total || 0 };
+  });
+  aviso.innerHTML = '';
+  renderizarExistencias();
+}
+
+function existenciasFiltradas() {
+  const palabras = normalizarTexto(document.getElementById('exi-buscar').value).split(/\s+/).filter(Boolean);
+  const rubro = document.getElementById('exi-rubro').value;
+  const filtro = document.getElementById('exi-filtro').value;
+  return existencias.filter(m => {
+    if (rubro && m.rubro !== rubro) return false;
+    if (filtro === 'con' && !(m.stock > 0.005)) return false;
+    if (filtro === 'sin' && m.stock > 0.005) return false;
+    if (filtro === 'faltan' && !(m.libre < -0.005)) return false;
+    if (palabras.length) {
+      const t = normalizarTexto(m.codigo + ' ' + (m.nombre || '') + ' ' + (m.categoria || ''));
+      if (!palabras.every(p => t.includes(p))) return false;
+    }
+    return true;
+  }).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+}
+
+function renderizarExistencias() {
+  const tbody = document.getElementById('tbody-existencias');
+  const lista = existenciasFiltradas();
+  const gris = t => `<span style="color:var(--gris-claro);">${t}</span>`;
+  const cant = (n, u) => Math.abs(n) <= 0.005 ? gris('0') : redondear2(n) + (u ? ' ' + escaparHTML(u) : '');
+  const html = lista.slice(0, EXI_MAX_FILAS).map(m => `
+    <tr>
+      <td>${m.codigo}</td>
+      <td>${escaparHTML(m.nombre || '')}</td>
+      <td>${m.rubro === 'herraje' ? 'Herraje' : 'Insumo'}</td>
+      <td>${escaparHTML(m.categoria || '')}</td>
+      <td class="pend-num"><strong>${cant(m.stock, m.umed)}</strong></td>
+      <td class="pend-num">${m.pedidoAbierto > 0.005 ? cant(m.pedidoAbierto) : gris('—')}</td>
+      <td class="pend-num" style="${m.libre < -0.005 ? 'color:#a33; font-weight:600;' : ''}">${m.pedidoAbierto > 0.005 ? cant(m.libre) : gris('—')}</td>
+      <td class="pend-num">${m.camino > 0.005 ? cant(m.camino) : gris('—')}</td>
+      <td style="font-size:12px;">${m.fecha_conteo ? new Date(m.fecha_conteo).toLocaleDateString('es-AR') : gris('sin conteo')}</td>
+    </tr>`).join('');
+  const resto = lista.length > EXI_MAX_FILAS
+    ? `<tr><td colspan="9" style="color:var(--gris-claro);">Mostrando ${EXI_MAX_FILAS} de ${lista.length} materiales. Usá el buscador o los filtros para ver el resto (o "Descargar Excel" para la lista completa).</td></tr>`
+    : '';
+  tbody.innerHTML = html + resto || '<tr><td colspan="9" style="color:var(--gris-claro);">No hay materiales que coincidan.</td></tr>';
+}
+
+async function descargarExistencias() {
+  try { await cargarLibreria('XLSX'); } catch (e) { alert(e.message); return; }
+  const filas = existenciasFiltradas().map(m => ({
+    'Código': m.codigo, 'Material': m.nombre || '', 'Rubro': m.rubro, 'Categoría': m.categoria || '', 'Unidad': m.umed || '',
+    'Stock físico': redondear2(m.stock), 'Pedido abierto': redondear2(m.pedidoAbierto), 'Libre': redondear2(m.libre),
+    'En camino': redondear2(m.camino), 'Último conteo': m.fecha_conteo ? new Date(m.fecha_conteo).toLocaleDateString('es-AR') : '',
+  }));
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(filas), 'Stock');
+  XLSX.writeFile(libro, 'stock-actual-' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
 // ---------------------------------------------------------------------
