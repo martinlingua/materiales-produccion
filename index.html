@@ -4506,6 +4506,8 @@ async function importarSelco() {
 //  - "(Blanco MDF 18)", "Blanco MDF 25"  -> MELAMINA <color> S/MDF <espesor>
 //  - "25 Blanco" (solo color y medida)    -> SUPERPLAC <color> <espesor>
 //  - "18 Aglomerado"                      -> AGLOMERADO <espesor>
+//  - "18 MDF" (sin color)                 -> M.D.F. <espesor>
+//  - "3 Blanco" (color y hasta 5 mm)      -> FONDO <color> <espesor>
 //  - "Nogal" en la planilla es "Roble Dakar" en el sistema.
 // Devuelve los códigos del insumo (más de uno si el catálogo lo tiene
 // repetido con el mismo nombre) o null si no hay uno claro.
@@ -4517,7 +4519,8 @@ const tokensPlaca = t => normalizarTexto(t).replace(/[()]/g, ' ').replace(/(\d),
 function indiceCatalogoPlacas() {
   return materialesCache.filter(m => m.rubro === 'insumo').map(m => {
     const n = normalizarTexto(m.nombre);
-    const tipo = n.startsWith('melamina') ? 'mel' : n.startsWith('superplac') ? 'spc' : n.startsWith('aglomerado') ? 'aglo' : null;
+    const tipo = n.startsWith('melamina') ? 'mel' : n.startsWith('superplac') ? 'spc' : n.startsWith('aglomerado') ? 'aglo'
+      : n.startsWith('m.d.f') ? 'mdf' : n.startsWith('fondo') ? 'fondo' : null;
     if (!tipo) return null;
     const esp = /(\d+(?:\.\d+)?)\s*mm/.exec(n.replace(/,/g, '.'));
     // El color es lo que va entre el tipo y "s/mdf" o el primer número/código.
@@ -4541,9 +4544,10 @@ function codigoDePlaca(nombre, indice) {
     color.push(SELCO_SINONIMOS[p] || p);
   }
   if (color.length === 1 && color[0] === 'nogal') color = ['roble', 'dakar'];
-  const tipo = aglo ? 'aglo' : !color.length ? null : mdf ? 'mel' : 'spc';
+  const tipo = aglo ? 'aglo' : !color.length ? (mdf ? 'mdf' : null) : mdf ? 'mel' : espesor !== null && espesor <= 5 ? 'fondo' : 'spc';
   if (!tipo || espesor === null) return null;
-  const candidatos = indice.filter(c => c.tipo === tipo && (c.espesor === espesor || c.espesor === null)
+  // Solo algunas melaminas del catálogo no dicen el espesor; el resto tiene que coincidir.
+  const candidatos = indice.filter(c => c.tipo === tipo && (c.espesor === espesor || (c.espesor === null && tipo === 'mel'))
     && color.every(p => c.color.includes(p)));
   // Primero el que tiene exactamente ese color (con el espesor exacto); si no,
   // el único que agrega menos palabras ("Kendal Encerado" -> "Roble Kendal Encerado").
