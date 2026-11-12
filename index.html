@@ -1115,6 +1115,7 @@ async function cargarTodo() {
   const { data: matsInfo } = rMats;
   const nombrePorMaterial = {};
   (matsInfo || []).forEach(m => nombrePorMaterial[m.codigo + '|' + m.rubro] = m);
+  calcularM2PorPlaca(matsInfo);
 
   datosCerrados = { herraje: [], insumo: [] };
   (cerrados || []).forEach(r => {
@@ -1228,20 +1229,57 @@ function asignarEnCamino() {
   });
 }
 
-function cantidadConUnidad(n, umed) {
-  return redondear2(n) + (umed ? ' ' + escaparHTML(umed) : '');
+// Las placas (melamina, superplac, MDF, fórmica...) se compran por unidad:
+// si el material va en m² y el catálogo dice cuántos m² trae cada placa
+// (factor de conversión), las cantidades se muestran en placas enteras.
+let m2PorPlaca = {};  // 'codigo|rubro' -> m² de una placa
+
+function calcularM2PorPlaca(materiales) {
+  m2PorPlaca = {};
+  (materiales || []).forEach(m => {
+    const factor = Number(m.factor_conversion) || 1;
+    const enM2 = /^m(ts?)?2?$/.test(normalizarTexto(m.umed).replace(/[.\s]/g, ''));
+    if (factor > 1 && (enM2 || /^placa/.test(normalizarTexto(m.unidad_conteo)))) m2PorPlaca[m.codigo + '|' + m.rubro] = factor;
+  });
+}
+
+// Unidad de un material, para pasarle a cantidadConUnidad / cantidadTexto.
+function unidadDe(codigo, rubro, umed) {
+  return { umed: umed || '', placa: m2PorPlaca[codigo + '|' + rubro] || 0 };
+}
+
+// Lo que falta o se necesita se redondea para arriba (no se compra media
+// placa); el stock, al entero más cercano.
+function enPlacas(n, u, redondeo) {
+  const p = n / u.placa;
+  return redondeo === 'cerca' ? Math.round(p) : Math.ceil(p - 0.001);
+}
+
+function cantidadTexto(n, u, redondeo) {
+  if (u.placa) { const p = enPlacas(n, u, redondeo); return p + (p === 1 ? ' placa' : ' placas'); }
+  return redondear2(n) + (u.umed ? ' ' + u.umed : '');
+}
+
+function cantidadConUnidad(n, u, redondeo) {
+  if (u.placa) return `<span title="${redondear2(n)} ${escaparHTML(u.umed || 'm2')}">${cantidadTexto(n, u, redondeo)}</span>`;
+  return escaparHTML(cantidadTexto(n, u, redondeo));
 }
 
 // Estado de un material dentro de un pedido, en una frase que se entienda
 // sin conocer los colores: "Listo", "Faltan 80 un — comprar", etc.
-function fraseMaterial(pend, camino, umed, cortado, aviso) {
+function fraseMaterial(pend, camino, u, cortado, aviso) {
   pend = Number(pend) || 0; camino = Number(camino) || 0;
   if (cortado) return '<span class="frase cortado" title="La placa ya se cortó (planilla Selco): el material se da por usado">Cortado</span>';
   if (pend <= 0.005) return '<span class="frase listo" title="Hay stock para este pedido">Listo</span>';
-  const falta = 'Faltan ' + cantidadConUnidad(pend, umed);
+  const falta = (u.placa && enPlacas(pend, u) === 1 ? 'Falta ' : 'Faltan ') + cantidadConUnidad(pend, u);
   const fijate = aviso ? ' <span title="Hubo un conteo o recepción después de cargarlo en camino: puede que ya haya llegado">(¿ya llegó?)</span>' : '';
   if (camino > 0.005 && pend - camino <= 0.005) return `<span class="frase camino" title="Comprado, todavía no llegó">${falta} — en camino${fijate}</span>`;
-  if (camino > 0.005) return `<span class="frase falta">${falta} — ${cantidadConUnidad(camino, umed)} en camino, comprar ${cantidadConUnidad(pend - camino, umed)}${fijate}</span>`;
+  if (camino > 0.005) {
+    // En placas, "comprar" es la resta de placas enteras para que la cuenta cierre.
+    const comprar = u.placa ? Math.max(enPlacas(pend, u) - enPlacas(camino, u, 'cerca'), 0) : 0;
+    if (u.placa && !comprar) return `<span class="frase camino" title="Comprado, todavía no llegó">${falta} — en camino${fijate}</span>`;
+    return `<span class="frase falta">${falta} — ${cantidadConUnidad(camino, u, 'cerca')} en camino, comprar ${u.placa ? comprar + (comprar === 1 ? ' placa' : ' placas') : cantidadConUnidad(pend - camino, u)}${fijate}</span>`;
+  }
   return `<span class="frase falta">${falta} — comprar</span>`;
 }
 
@@ -2042,14 +2080,14 @@ function renderizarAlertas() {
         const peds = a.pedidos.slice().sort((x, y) => x.d - y.d);
         const lista = peds.slice(0, 6).map(p => `<div>${p.n}${p.cliente ? ' · ' + escaparHTML(p.cliente) : ''} — sale ${formatearFechaCorta(p.salida)} <strong>(${alTextoDias(p.d)})</strong></div>`).join('') +
           (peds.length > 6 ? `<div style="color:var(--gris-claro);">y ${peds.length - 6} más</div>` : '');
-        const u = escaparHTML(a.umed || '');
+        const un = unidadDe(a.codigo, a.rubro, a.umed);
         const primero = peds[0];
         const resumen = `<div>${formatearFechaCorta(primero.salida)} <strong>(${alTextoDias(primero.d)})</strong></div><div style="color:var(--gris-claro);">${peds.length} pedido${peds.length === 1 ? '' : 's'} afectado${peds.length === 1 ? '' : 's'}</div>`;
         return `<tr>
           <td><span class="sev" style="${etiqueta[a.sev][1]}">${etiqueta[a.sev][0]}</span></td>
           <td><strong>${a.codigo}</strong> — ${escaparHTML(a.nombre || '')}<div style="font-size:11px; color:var(--gris-claro);">${a.rubro}${a.proveedor ? ' · ' + escaparHTML(a.proveedor) : ''}</div></td>
-          <td class="pend-num ${a.comprar > 0.005 ? 'pend-pos' : ''}">${a.comprar > 0.005 ? redondear2(a.comprar) + ' ' + u : '—'}</td>
-          <td class="pend-num ${a.camino > 0.005 ? 'pend-camino' : ''}">${a.camino > 0.005 ? redondear2(a.camino) + ' ' + u : '—'}</td>
+          <td class="pend-num ${a.comprar > 0.005 ? 'pend-pos' : ''}">${a.comprar > 0.005 ? cantidadConUnidad(a.comprar, un) : '—'}</td>
+          <td class="pend-num ${a.camino > 0.005 ? 'pend-camino' : ''}">${a.camino > 0.005 ? cantidadConUnidad(a.camino, un, 'cerca') : '—'}</td>
           <td style="font-size:12px;">${conPedidos ? lista : resumen}</td>
           <td style="font-size:12px;">${Array.from(a.motivos).map(escaparHTML).join('<br>')}</td>
         </tr>`;
@@ -2717,14 +2755,14 @@ function renderizarPorPedido(rubro) {
     const filasMat = Object.entries(porMaterial)
       .sort(([ca, a], [cb, b]) => cmpMat({ ...a, codigo: Number(ca) }, { ...b, codigo: Number(cb) }))
       .filter(([, m]) => pedidoCerrado || !ocultarCubierto || m.pendiente > 0)
-      .map(([codigo, m]) => `
+      .map(([codigo, m]) => { const u = unidadDe(codigo, rubro, m.umed); return `
       <tr>
         <td>${codigo}</td>
         <td>${m.nombre}${m.reemplazadoPor ? ` <span style="color:var(--gris-claro);font-size:12px;">→ reemplazado por ${m.reemplazadoPor}</span>` : ''}${m.ignorado ? ' <span style="color:var(--gris-claro);font-size:12px;">→ ignorado (no es faltante)</span>' : ''}</td>
-        <td style="white-space:nowrap;">${cantidadConUnidad(m.requerido, m.umed)}</td>
+        <td style="white-space:nowrap;">${cantidadConUnidad(m.requerido, u)}</td>
         <td>${pedidoCerrado
-          ? (m.faltante > 0.005 ? `<span class="frase falta">Faltaban ${cantidadConUnidad(m.faltante, m.umed)}</span>` : m.ignorado || m.reemplazadoPor ? '' : '<span class="frase listo">Completo</span>')
-          : fraseMaterial(m.pendiente, m.camino, m.umed, m.cortado, (enCaminoPorMaterial[codigo + '|' + rubro] || {}).aviso)}</td>
+          ? (m.faltante > 0.005 ? `<span class="frase falta">Faltaban ${cantidadConUnidad(m.faltante, u)}</span>` : m.ignorado || m.reemplazadoPor ? '' : '<span class="frase listo">Completo</span>')
+          : fraseMaterial(m.pendiente, m.camino, u, m.cortado, (enCaminoPorMaterial[codigo + '|' + rubro] || {}).aviso)}</td>
         <td>${m.proveedor || ''}</td>
         <td style="white-space:nowrap;">${!puedeEscribir() ? '' : (pedidoCerrado
           ? (m.ignorado ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
@@ -2737,7 +2775,7 @@ function renderizarPorPedido(rubro) {
                     onclick="event.stopPropagation(); ignorarMaterial(${numero}, '${rubro}', ${codigo})"
                     title="No se envía o no hace falta: deja de contar como faltante">Ignorar</button>`)}</td>
       </tr>
-    `).join('');
+    `; }).join('');
 
     const botones = pedidoCerrado
       ? `<button class="primario" style="margin-top:8px; font-size:12px; padding:5px 10px;"
@@ -2855,6 +2893,7 @@ function renderizarPorMaterial(rubro) {
     const pendienteTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.pendiente, 0);
     const caminoTotal = pedidosDelMaterial.reduce((acc, [, p]) => acc + p.camino, 0);
     const infoCamino = enCaminoPorMaterial[codigo + '|' + rubro];
+    const u = unidadDe(codigo, rubro, g.umed);
 
     const trMat = document.createElement('tr');
     trMat.className = 'fila-pedido';
@@ -2868,8 +2907,8 @@ function renderizarPorMaterial(rubro) {
       <td><strong>${codigo}</strong></td>
       <td>${g.nombre || ''}</td>
       <td>${g.proveedor || ''}</td>
-      <td>${fraseMaterial(pendienteTotal, caminoTotal, g.umed, false, infoCamino && infoCamino.aviso)}</td>
-      <td title="Stock disponible antes de repartirlo entre los pedidos">${g.stock === null ? '<span style="color:var(--gris-claro);">—</span>' : '<strong>' + cantidadConUnidad(g.stock, g.umed) + '</strong>'}${infoCamino ? `<div style="font-size:11px; color:#8a6d00;" title="Comprado, todavía no llegó. No está incluido en el stock.">+${redondear2(infoCamino.total)} en camino</div>` : ''}</td>
+      <td>${fraseMaterial(pendienteTotal, caminoTotal, u, false, infoCamino && infoCamino.aviso)}</td>
+      <td title="Stock disponible antes de repartirlo entre los pedidos">${g.stock === null ? '<span style="color:var(--gris-claro);">—</span>' : '<strong>' + cantidadConUnidad(g.stock, u, 'cerca') + '</strong>'}${infoCamino ? `<div style="font-size:11px; color:#8a6d00;" title="Comprado, todavía no llegó. No está incluido en el stock.">+${cantidadTexto(infoCamino.total, u, 'cerca')} en camino</div>` : ''}</td>
       <td>${pedidosDelMaterial.length}</td>
       <td style="white-space:nowrap;">${puedeEscribir() ? `<button class="primario" style="font-size:11px; padding:3px 8px; background:var(--gris-claro);"
               onclick="event.stopPropagation(); ajustarStock(${codigo}, '${rubro}')"
@@ -2893,12 +2932,12 @@ function renderizarPorMaterial(rubro) {
           <td>${!p.fecha_salida ? '' : !p.cerrado && fechaPasada(p.fecha_salida)
             ? `<span class="fecha-atrasada" title="Atrasado: la fecha de salida ya pasó y no se lo marcó entregado">${formatearFechaCorta(p.fecha_salida)}</span>`
             : formatearFechaCorta(p.fecha_salida)}</td>
-          <td style="white-space:nowrap;">${cantidadConUnidad(p.requerido, g.umed)}</td>
+          <td style="white-space:nowrap;">${cantidadConUnidad(p.requerido, u)}</td>
           <td>${p.cerrado
             ? (salidaP
-                ? (p.faltante > 0.005 ? `<span class="frase falta">Entregado ${formatearFechaCorta(salidaP)}, faltaban ${cantidadConUnidad(p.faltante, g.umed)}</span>` : `<span class="frase listo">Entregado ${formatearFechaCorta(salidaP)}</span>`)
+                ? (p.faltante > 0.005 ? `<span class="frase falta">Entregado ${formatearFechaCorta(salidaP)}, faltaban ${cantidadConUnidad(p.faltante, u)}</span>` : `<span class="frase listo">Entregado ${formatearFechaCorta(salidaP)}</span>`)
                 : 'Cerrado')
-            : fraseMaterial(p.pendiente, p.camino, g.umed, p.cortado)}</td>
+            : fraseMaterial(p.pendiente, p.camino, u, p.cortado)}</td>
           <td>
             ${p.cerrado ? '' : `
               <button class="primario" style="font-size:11px; padding:4px 8px;"
@@ -3441,21 +3480,23 @@ function armarHTMLFaltantes(rubro, filas, descripcionFiltros, conPedidos = true)
     const mats = Object.entries(porProveedor[prov]).sort((a, b) => (a[1].nombre || '').localeCompare(b[1].nombre || ''));
     totalMateriales += mats.length;
     const filasHTML = mats.map(([codigo, m]) => {
+      const un = unidadDe(codigo, rubro, m.umed);
+      // En placas, a comprar = placas que faltan - placas en camino (enteras).
+      if (un.placa) m.comprar = Math.max(enPlacas(m.faltante, un) - enPlacas(m.camino, un, 'cerca'), 0) * un.placa;
       const pedidos = Object.entries(m.pedidos)
         .sort((a, b) => (a[1].salida || '9999').localeCompare(b[1].salida || '9999') || (a[0] - b[0]))
-        .map(([n, p]) => `${n} (${redondear2(p.cant)})`).join(', ');
+        .map(([n, p]) => `${n} (${cantidadTexto(p.cant, un)})`).join(', ');
       // Detalle de lo que ya está en camino (proveedor / orden de compra / aclaración).
       const detalleCamino = enCaminoAbiertos
         .filter(r => r.material_rubro === rubro && String(r.material_codigo) === String(codigo))
-        .map(r => `${redondear2(r.cantidad)} ${m.umed || ''}${r.nota ? ' — ' + r.nota : ''}${r.fecha_estimada ? ' (llega ' + r.fecha_estimada + ')' : ''}`);
-      const u = escaparHTML(m.umed || '');
+        .map(r => `${cantidadTexto(Number(r.cantidad), un, 'cerca')}${r.nota ? ' — ' + r.nota : ''}${r.fecha_estimada ? ' (llega ' + r.fecha_estimada + ')' : ''}`);
       return `<tr>
         <td class="chk"></td>
         <td>${escaparHTML(codigo)}</td>
         <td>${escaparHTML(m.nombre)}${detalleCamino.length ? `<div class="cam">En camino: ${escaparHTML(detalleCamino.join(' · '))}</div>` : ''}</td>
-        <td class="num">${redondear2(m.faltante)} ${u}</td>
-        <td class="num cam-n">${m.camino > 0.005 ? redondear2(m.camino) + ' ' + u : '—'}</td>
-        <td class="num ${m.comprar > 0.005 ? 'comprar' : 'cubierto'}">${m.comprar > 0.005 ? redondear2(m.comprar) + ' ' + u : '0'}</td>
+        <td class="num">${escaparHTML(cantidadTexto(m.faltante, un))}</td>
+        <td class="num cam-n">${m.camino > 0.005 ? escaparHTML(cantidadTexto(m.camino, un, 'cerca')) : '—'}</td>
+        <td class="num ${m.comprar > 0.005 ? 'comprar' : 'cubierto'}">${m.comprar > 0.005 ? escaparHTML(cantidadTexto(m.comprar, un)) : '0'}</td>
         ${conPedidos ? `<td class="ped">${escaparHTML(pedidos)}</td>` : ''}
       </tr>`;
     }).join('');
@@ -4635,7 +4676,14 @@ async function cargarExistencias() {
   existencias = (data || []).map(m => {
     const k = m.codigo + '|' + m.rubro;
     const stock = Number(m.stock) || 0, pedidoAbierto = pedido[k] || 0;
-    return { ...m, stock, pedidoAbierto, libre: stock - pedidoAbierto, camino: (enCaminoPorMaterial[k] || {}).total || 0 };
+    const camino = (enCaminoPorMaterial[k] || {}).total || 0;
+    // Lo que se muestra: en placas enteras si el material es una placa.
+    const u = unidadDe(m.codigo, m.rubro, m.umed);
+    const v = u.placa
+      ? { stock: enPlacas(stock, u, 'cerca'), pedido: enPlacas(pedidoAbierto, u), camino: enPlacas(camino, u, 'cerca'), unidad: 'placas' }
+      : { stock: redondear2(stock), pedido: redondear2(pedidoAbierto), camino: redondear2(camino), unidad: m.umed || '' };
+    v.libre = redondear2(v.stock - v.pedido);
+    return { ...m, stock, pedidoAbierto, camino, v };
   });
   aviso.innerHTML = '';
   renderizarExistencias();
@@ -4649,7 +4697,7 @@ function existenciasFiltradas() {
     if (rubro && m.rubro !== rubro) return false;
     if (filtro === 'con' && !(m.stock > 0.005)) return false;
     if (filtro === 'sin' && m.stock > 0.005) return false;
-    if (filtro === 'faltan' && !(m.libre < -0.005)) return false;
+    if (filtro === 'faltan' && !(m.pedidoAbierto > 0.005 && m.v.libre < 0)) return false;
     if (palabras.length) {
       const t = normalizarTexto(m.codigo + ' ' + (m.nombre || '') + ' ' + (m.categoria || ''));
       if (!palabras.every(p => t.includes(p))) return false;
@@ -4662,17 +4710,17 @@ function renderizarExistencias() {
   const tbody = document.getElementById('tbody-existencias');
   const lista = existenciasFiltradas();
   const gris = t => `<span style="color:var(--gris-claro);">${t}</span>`;
-  const cant = (n, u) => Math.abs(n) <= 0.005 ? gris('0') : redondear2(n) + (u ? ' ' + escaparHTML(u) : '');
+  const cant = (n, m) => Math.abs(n) <= 0.005 ? gris('0') : n + (m.v.unidad ? ' ' + escaparHTML(m.v.unidad) : '');
   const html = lista.slice(0, EXI_MAX_FILAS).map(m => `
     <tr>
       <td>${m.codigo}</td>
       <td>${escaparHTML(m.nombre || '')}</td>
       <td>${m.rubro === 'herraje' ? 'Herraje' : 'Insumo'}</td>
       <td>${escaparHTML(m.categoria || '')}</td>
-      <td class="pend-num"><strong>${cant(m.stock, m.umed)}</strong></td>
-      <td class="pend-num">${m.pedidoAbierto > 0.005 ? cant(m.pedidoAbierto) : gris('—')}</td>
-      <td class="pend-num" style="${m.libre < -0.005 ? 'color:#a33; font-weight:600;' : ''}">${m.pedidoAbierto > 0.005 ? cant(m.libre) : gris('—')}</td>
-      <td class="pend-num">${m.camino > 0.005 ? cant(m.camino) : gris('—')}</td>
+      <td class="pend-num"><strong>${cant(m.v.stock, m)}</strong></td>
+      <td class="pend-num">${m.pedidoAbierto > 0.005 ? cant(m.v.pedido, m) : gris('—')}</td>
+      <td class="pend-num" style="${m.pedidoAbierto > 0.005 && m.v.libre < 0 ? 'color:#a33; font-weight:600;' : ''}">${m.pedidoAbierto > 0.005 ? cant(m.v.libre, m) : gris('—')}</td>
+      <td class="pend-num">${m.camino > 0.005 ? cant(m.v.camino, m) : gris('—')}</td>
       <td style="font-size:12px;">${m.fecha_conteo ? new Date(m.fecha_conteo).toLocaleDateString('es-AR') : gris('sin conteo')}</td>
     </tr>`).join('');
   const resto = lista.length > EXI_MAX_FILAS
@@ -4684,9 +4732,9 @@ function renderizarExistencias() {
 async function descargarExistencias() {
   try { await cargarLibreria('XLSX'); } catch (e) { alert(e.message); return; }
   const filas = existenciasFiltradas().map(m => ({
-    'Código': m.codigo, 'Material': m.nombre || '', 'Rubro': m.rubro, 'Categoría': m.categoria || '', 'Unidad': m.umed || '',
-    'Stock físico': redondear2(m.stock), 'Pedido abierto': redondear2(m.pedidoAbierto), 'Libre': redondear2(m.libre),
-    'En camino': redondear2(m.camino), 'Último conteo': m.fecha_conteo ? new Date(m.fecha_conteo).toLocaleDateString('es-AR') : '',
+    'Código': m.codigo, 'Material': m.nombre || '', 'Rubro': m.rubro, 'Categoría': m.categoria || '', 'Unidad': m.v.unidad,
+    'Stock físico': m.v.stock, 'Pedido abierto': m.v.pedido, 'Libre': m.v.libre,
+    'En camino': m.v.camino, 'Último conteo': m.fecha_conteo ? new Date(m.fecha_conteo).toLocaleDateString('es-AR') : '',
   }));
   const libro = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(filas), 'Stock');
