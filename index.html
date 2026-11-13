@@ -3020,20 +3020,37 @@ async function marcarEntregados(numeros, fecha) {
   return true;
 }
 
-// Antes de cerrar, anota en cada requerimiento lo que todavía faltaba, para
-// que el pedido figure "Entregado con faltantes". Se agrupan por cantidad
-// para hacer una actualización por valor y no una por fila.
+// Antes de cerrar, anota en cada requerimiento:
+//  - lo que todavía faltaba, para que el pedido figure "Entregado con faltantes";
+//  - lo que tenía cubierto con stock, que queda consumido: el stock físico lo
+//    descuenta hasta el próximo conteo (lo cortado en Selco no tiene nada
+//    cubierto, así que no descuenta).
+// Se agrupan por valores para hacer una actualización por grupo y no una por fila.
+let columnaConsumoOk = true;  // false si todavía no existe requerimientos.consumido_al_entregar
+
 async function guardarFaltantes(pedidos) {
   const enTanda = new Set(pedidos);
-  const idsPorCantidad = {};
+  const idsPorValores = {};
   [...datosPendientes.herraje, ...datosPendientes.insumo].forEach(f => {
-    const pend = Number(f.pendiente);
-    if (!enTanda.has(f.pedido_numero) || !(pend > 0.005)) return;
-    (idsPorCantidad[pend] = idsPorCantidad[pend] || []).push(f.requerimiento_id);
+    if (!enTanda.has(f.pedido_numero)) return;
+    const pend = Number(f.pendiente) > 0.005 ? Number(f.pendiente) : 0;
+    const consumido = Number(f.cubierto_por_stock_general) > 0.005 ? Number(f.cubierto_por_stock_general) : 0;
+    if (!pend && !consumido) return;
+    const clave = pend + '|' + consumido;
+    (idsPorValores[clave] = idsPorValores[clave] || []).push(f.requerimiento_id);
   });
-  for (const [cantidad, ids] of Object.entries(idsPorCantidad)) {
+  for (const [clave, ids] of Object.entries(idsPorValores)) {
+    const [pend, consumido] = clave.split('|').map(Number);
     for (let i = 0; i < ids.length; i += 150) {
-      const { error } = await sb.from('requerimientos').update({ faltante_al_entregar: Number(cantidad) }).in('id', ids.slice(i, i + 150));
+      const cambios = { faltante_al_entregar: pend || null };
+      if (columnaConsumoOk) cambios.consumido_al_entregar = consumido || null;
+      let { error } = await sb.from('requerimientos').update(cambios).in('id', ids.slice(i, i + 150));
+      if (error && /consumido_al_entregar/.test(error.message)) {
+        // Todavía no se corrió el script de Supabase: se guarda solo lo que faltaba.
+        columnaConsumoOk = false;
+        delete cambios.consumido_al_entregar;
+        ({ error } = await sb.from('requerimientos').update(cambios).in('id', ids.slice(i, i + 150)));
+      }
       if (error) { alert('No se pudo guardar lo que faltaba de cada material: ' + error.message); return false; }
     }
   }
@@ -3043,10 +3060,18 @@ async function guardarFaltantes(pedidos) {
 async function reabrirPedidos(numeros) {
   for (let i = 0; i < numeros.length; i += 150) {
     const tanda = numeros.slice(i, i + 150);
-    // Al reabrir se borra lo que faltaba: si se vuelve a entregar se anota de nuevo.
+    // Al reabrir se borra lo que faltaba y lo consumido (vuelve al stock):
+    // si se vuelve a entregar se anota de nuevo.
     const cambios = columnaFaltanteOk ? { activo: true, faltante_al_entregar: null } : { activo: true };
-    const { error: e1 } = await sb.from('requerimientos').update(cambios)
+    if (columnaFaltanteOk && columnaConsumoOk) cambios.consumido_al_entregar = null;
+    const reabrir = () => sb.from('requerimientos').update(cambios)
       .in('pedido_numero', tanda).eq('activo', false).is('reemplazado_por', null).eq('ignorado', false);
+    let { error: e1 } = await reabrir();
+    if (e1 && /consumido_al_entregar/.test(e1.message)) {
+      columnaConsumoOk = false;
+      delete cambios.consumido_al_entregar;
+      ({ error: e1 } = await reabrir());
+    }
     if (e1) { alert('No se pudieron reabrir los pedidos: ' + e1.message); await cargarTodo(); return false; }
     if (columnaEntregaOk) {
       const { error: e2 } = await sb.from('pedidos').update({ entregado_en: null }).in('numero', tanda);
