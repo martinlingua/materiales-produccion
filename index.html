@@ -4047,12 +4047,19 @@ async function importarPiezas() {
         terminacion: r['Terminacion'] || null, actualizado_en: new Date().toISOString(),
       });
     });
+    // El archivo a veces repite la misma pieza (mismo IDHC_G) y Supabase
+    // rechaza un lote que actualiza dos veces la misma fila: queda la última.
+    const unicas = {};
+    filas.forEach(f => { unicas[f.idhc_g] = f; });
+    const repetidas = filas.length - Object.keys(unicas).length;
+    filas.length = 0;
+    Object.keys(unicas).forEach(k => filas.push(unicas[k]));
     for (let i = 0; i < filas.length; i += 500) {
       const { error } = await sb.from('piezas').upsert(filas.slice(i, i + 500), { onConflict: 'idhc_g' });
       if (error) throw new Error(error.message);
     }
     const pedidos = new Set(filas.map(f => f.pedido_numero));
-    aviso.innerHTML = `<div class="aviso ok">Listo: ${filas.length} piezas de ${pedidos.size} pedidos cargadas${descartadas ? ` (${descartadas} filas sin datos se descartaron)` : ''}.</div>`;
+    aviso.innerHTML = `<div class="aviso ok">Listo: ${filas.length} piezas de ${pedidos.size} pedidos cargadas${descartadas ? ` (${descartadas} filas sin datos se descartaron)` : ''}${repetidas ? ` (${repetidas} filas repetidas se cargaron una sola vez)` : ''}.</div>`;
     input.value = '';
     await cargarEtiquetas();
     const sinCliente = [...pedidos].filter(n => !clientePorPedido[n]);
